@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docker Container Monitor</title>
+    <link rel="stylesheet" href="./style.css">
+    <!-- Alpine.js CDN -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+
+<body>
+    <div x-data="dockerMonitor()" x-init="init()" class="container">
+        <h1>Docker Container Monitor</h1>
+
+        <!-- Control Panel -->
+        <div class="controls">
+            <button @click="refreshContainers()" :disabled="isLoading" class="btn btn-primary">
+                <span x-show="!isLoading">Refresh List</span>
+                <span x-show="isLoading">Loading...</span>
+            </button>
+
+            <div class="filter-container">
+                <input type="text" x-model="filterText" @input="applyFilter()" placeholder="Filter containers..."
+                    class="filter-input" id="filterInput">
+                <button x-show="filterText" @click="clearFilter()" class="filter-clear-btn" title="Clear filter">
+                    &times;
+                </button>
+            </div>
+
+            <label>
+                Auto Refresh Interval (seconds, 0 to disable):
+                <input type="number" x-model.number="refreshInterval" @change="updateAutoRefresh()" min="0" max="300"
+                    class="input-number">
+            </label>
+
+            <label>
+                Log Lines (0 for unlimited):
+                <input type="number" x-model.number="logLines" @change="updateLogLines()" min="0" max="10000"
+                    class="input-number">
+            </label>
+
+            <label>
+                Page Width:
+                <select x-model="pageWidth" @change="updatePageWidth()" class="select">
+                    <option value="80">80%</option>
+                    <option value="100">100%</option>
+                </select>
+            </label>
+
+            <label>
+                Theme:
+                <select x-model="theme" @change="updateTheme()" class="select">
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                </select>
+            </label>
+
+            <span class="status-text" x-text="statusText"></span>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div x-show="isLoading" class="loading">Loading...</div>
+
+        <!-- Container Table -->
+        <div x-show="!isLoading && containers.length > 0" class="table-wrapper">
+            <table class="containers-table">
+                <thead>
+                    <tr>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'id' && sortDirection === 'asc', 'sort-desc': sortColumn === 'id' && sortDirection === 'desc' }"
+                            @click="sortBy('id')" data-column="id">
+                            ID
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'name' && sortDirection === 'asc', 'sort-desc': sortColumn === 'name' && sortDirection === 'desc' }"
+                            @click="sortBy('name')" data-column="name">
+                            Name
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'image' && sortDirection === 'asc', 'sort-desc': sortColumn === 'image' && sortDirection === 'desc' }"
+                            @click="sortBy('image')" data-column="image">
+                            Image
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'created' && sortDirection === 'asc', 'sort-desc': sortColumn === 'created' && sortDirection === 'desc' }"
+                            @click="sortBy('created')" data-column="created">
+                            Created
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'compose' && sortDirection === 'asc', 'sort-desc': sortColumn === 'compose' && sortDirection === 'desc' }"
+                            @click="sortBy('compose')" data-column="compose">
+                            Compose File
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'gpu' && sortDirection === 'asc', 'sort-desc': sortColumn === 'gpu' && sortDirection === 'desc' }"
+                            @click="sortBy('gpu')" data-column="gpu">
+                            GPU Devices
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'memory' && sortDirection === 'asc', 'sort-desc': sortColumn === 'memory' && sortDirection === 'desc' }"
+                            @click="sortBy('memory')" data-column="memory">
+                            GPU Memory
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'memusage' && sortDirection === 'asc', 'sort-desc': sortColumn === 'memusage' && sortDirection === 'desc' }"
+                            @click="sortBy('memusage')" data-column="memusage">
+                            Mem Usage
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'cpu' && sortDirection === 'asc', 'sort-desc': sortColumn === 'cpu' && sortDirection === 'desc' }"
+                            @click="sortBy('cpu')" data-column="cpu">
+                            CPU
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'portbindings' && sortDirection === 'asc', 'sort-desc': sortColumn === 'portbindings' && sortDirection === 'desc' }"
+                            @click="sortBy('portbindings')" data-column="portbindings">
+                            Port Bindings
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="sortable resizable"
+                            :class="{ 'sort-asc': sortColumn === 'entrypoint' && sortDirection === 'asc', 'sort-desc': sortColumn === 'entrypoint' && sortDirection === 'desc' }"
+                            @click="sortBy('entrypoint')" data-column="entrypoint">
+                            Entrypoint
+                            <div class="resizer"></div>
+                        </th>
+                        <th class="resizable">Actions<div class="resizer"></div>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="container in sortedContainers" :key="container.Id">
+                        <tr>
+                            <td class="id-cell" :title="container.Id" x-text="container.shortId"></td>
+                            <td class="name-cell" x-text="container.Name || '-'"></td>
+                            <td :title="container.Image" x-text="container.Image || '-'"></td>
+                            <td x-text="container.createdFormatted"></td>
+                            <td :title="container.ComposeFile" x-text="container.ComposeFile || '-'"></td>
+                            <td x-text="container.gpuDevices"></td>
+                            <td class="gpu-memory-cell"
+                                :class="{ 'has-tooltip': container.gpuInfo && container.gpuInfo.gpu_processes }"
+                                :data-tooltip="container.gpuTooltip" x-html="container.gpuMemoryDisplay">
+                            </td>
+                            <td x-text="container.memUsageDisplay || '-'"></td>
+                            <td x-text="container.cpuDisplay || '-'"></td>
+                            <td :title="container.portBindingsDisplay" x-text="container.portBindingsDisplay || '-'"
+                                style="white-space: pre-line;"></td>
+                            <td :title="container.entrypointDisplay" x-text="container.entrypointDisplay"></td>
+                            <td class="actions-cell">
+                                <div class="actions-buttons">
+                                    <button @click="copyContainerInfo(container, $event)" class="btn btn-sm btn-copy"
+                                        title="Copy container information">
+                                        Copy
+                                    </button>
+                                    <button @click="viewLogs(container.Id, container.Name || container.shortId)"
+                                        class="btn btn-sm btn-log">
+                                        View Logs
+                                    </button>
+                                    <template x-if="container.ComposeFile && container.ComposeFile !== '-'">
+                                        <button
+                                            @click="restartContainer(container.Id, container.Name || container.shortId)"
+                                            :disabled="isRestarting" class="btn btn-sm btn-restart">
+                                            <span x-show="!isRestarting">Restart</span>
+                                            <span x-show="isRestarting">Restarting...</span>
+                                        </button>
+                                    </template>
+                                </div>
+                            </td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Empty State -->
+        <div x-show="!isLoading && containers.length === 0" class="empty-state">
+            No running containers
+        </div>
+
+        <!-- Log View Modal -->
+        <div x-show="showLogModal" class="modal" x-cloak>
+            <div class="modal-content log-modal-content">
+                <div class="modal-header">
+                    <h2 x-text="`Container Logs - ${logModalTitle}`"></h2>
+                    <div class="modal-header-controls">
+                        <label class="font-size-control">
+                            Font Size:
+                            <input type="number" x-model.number="logFontSize" @change="updateLogFontSize()" min="10"
+                                max="24" class="font-size-input">
+                        </label>
+                        <button @click="closeLogModal()" class="close-btn">&times;</button>
+                    </div>
+                </div>
+                <div class="log-container" x-ref="logContainer" :style="`font-size: ${logFontSize}px`"></div>
+            </div>
+        </div>
+
+        <!-- Password Input Modal -->
+        <div x-show="showPasswordModal" class="modal" x-cloak>
+            <div class="password-modal-content">
+                <h3 x-text="`Restart Container: ${passwordModalTitle}`"></h3>
+                <div class="password-input-group">
+                    <label for="usernameInput">Username:</label>
+                    <input type="text" id="usernameInput" x-model="usernameInput" @keyup.enter="confirmPassword()"
+                        placeholder="Enter username" autocomplete="username" class="password-input">
+                </div>
+                <div class="password-input-group">
+                    <label for="passwordInput">Password:</label>
+                    <input type="password" id="passwordInput" x-model="passwordInput" @keyup.enter="confirmPassword()"
+                        placeholder="Enter password" autocomplete="current-password" class="password-input">
+                    <div x-show="passwordError" class="password-error" x-text="passwordError"></div>
+                </div>
+                <div class="password-modal-buttons">
+                    <button @click="closePasswordModal()" class="btn btn-secondary">Cancel</button>
+                    <button @click="confirmPassword()" class="btn btn-primary">Confirm</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Restart Log Modal -->
+        <div x-show="showRestartLogModal" class="modal" x-cloak>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 x-text="`Restart Container: ${restartLogModalTitle}`"></h2>
+                    <div class="modal-header-controls">
+                        <label class="font-size-control">
+                            Font Size:
+                            <input type="number" x-model.number="restartLogFontSize"
+                                @change="updateRestartLogFontSize()" min="10" max="24" class="font-size-input">
+                        </label>
+                        <button @click="closeRestartLogModal()" class="close-btn">&times;</button>
+                    </div>
+                </div>
+                <div class="restart-status" x-text="restartStatus"></div>
+                <div class="log-container" x-ref="restartLogContainer" :style="`font-size: ${restartLogFontSize}px`">
+                </div>
+                <div x-show="showRestartActions" class="restart-log-actions">
+                    <button x-show="restartError" @click="retryRestart()" class="btn btn-primary">
+                        Retry
+                    </button>
+                    <button @click="closeRestartLogModal()" class="btn btn-secondary">
+                        Close
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- GPU Tooltip (global) -->
+        <div id="global-gpu-tooltip" class="gpu-tooltip" x-show="false"></div>
+    </div>
+
+    <script src="./app.js"></script>
+</body>
+
+</html>
