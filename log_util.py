@@ -165,7 +165,7 @@ try:
                 ': <lvl>{message}</lvl>')
             _stdout_logger_id = logger.add(sys.stdout, level=log_level, colorize=True, format=console_format)
         logger.add(f'{log_dir}/{log_file}', level=log_level, enqueue=True, rotation=f'00:00:00',
-                   retention=f'{backup_count} days', compression='zip', format=file_format)
+                   retention=backup_count, compression='zip', format=file_format)
 
 except ImportError:
 
@@ -264,6 +264,8 @@ def remove_color_of_shell_text(stdout: str) -> str:
             mpos = color_pos + 4
         elif color_pos + 5 < text_len and stdout[color_pos + 5] == 'm':
             mpos = color_pos + 5
+        elif color_pos + 6 < text_len and stdout[color_pos + 6] == 'm':
+            mpos = color_pos + 6
         if mpos > 0:
             if color_pos > start:
                 result_parts.append(stdout[start:color_pos])

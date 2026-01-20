@@ -23,7 +23,7 @@ if __name__ == '__main__':
 
     if args.install:
         if sys.platform == 'linux':
-            service_log_path = os.path.normpath(os.path.join(sutil.ExeDir, '..', 'logs', 'stdout_docker_monitor.log'))
+            service_log_path = os.path.join(sutil.ExeDir, 'logs', 'stdout-docker-monitor.log')
             sutil.install_as_service('docker-monitor', 'Docker Monitor Service', service_log_path,
                 args=f'--host {args.host} --port {args.port} --nostdout')
         else:
