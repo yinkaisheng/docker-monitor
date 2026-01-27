@@ -623,10 +623,48 @@ async def a_run_cmd_iter(cmd: Union[str, List[str]], text: bool = True, encoding
             - ('exception', ex): Exception occurred
             - ('return', exit_code): Process completed with exit code
     """
+
+    def find_last_ascii_pos(data: bytearray) -> int:
+        for i in range(len(data) - 1, -1, -1):
+            byte_val = data[i]
+            # ASCII character (0x00-0x7F): safe to cut after
+            if byte_val <= 0x7F:
+                return i
+        return -1
+
     async def a_get_output(stream: asyncio.StreamReader, que: asyncio.Queue, stdtype: str) -> None:
-        async for line in stream:
-            await que.put((stdtype, line))
-        await que.put(None)
+        # async for line in stream:
+        #     # readline has 64 kb memory limit, may hang if output is too long, e.g. 200000 chars
+        #     await que.put((stdtype, line))
+        # await que.put(None)
+
+        size_16_kb = 16*1024
+        buffer = bytearray()
+        while True:
+            bytes = await stream.read(size_16_kb) # read 16 kb, avoid hanging if output > 64 kb and no newline
+            if not bytes:
+                if buffer:
+                    await que.put((stdtype, buffer))
+                await que.put(None)
+                break
+            buffer.extend(bytes)
+            while True:
+                ln_pos = buffer.find(b'\n')
+                if ln_pos == -1:
+                    break
+                line = buffer[:ln_pos+1]
+                await que.put((stdtype, line))
+                buffer = buffer[ln_pos+1:]
+            # If buffer is too large, find a safe cut point to avoid UTF-8 character splitting
+            if len(buffer) >= size_16_kb:
+                cut_pos = find_last_ascii_pos(buffer)
+                if cut_pos > 0:
+                    output_chunk = buffer[:cut_pos]
+                    buffer = buffer[cut_pos:]
+                    await que.put((stdtype, output_chunk))
+                elif len(buffer) > size_16_kb * 4:
+                    await que.put((stdtype, buffer)) # output partial buffer if no ascii character
+                    buffer = bytearray()
 
     if sys.platform != 'win32':
         if env is None:
@@ -685,7 +723,7 @@ async def a_run_cmd_iter(cmd: Union[str, List[str]], text: bool = True, encoding
                     continue
             if text:
                 output_type, line = output
-                yield output_type, line.decode(encoding)
+                yield output_type, line.decode(encoding, errors='ignore')
             else:
                 yield output
         except asyncio.TimeoutError as ex:

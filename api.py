@@ -801,13 +801,15 @@ async def restart_container_stream(request: Request, container_id: str,
 
 @router.get("/api/containers/{container_id}/logs", summary='View container logs in real-time',
             description='Use SSE to return container logs in real-time')
-async def stream_container_logs(container_id: str, lines: int = 50, remove_color: bool = True):
+async def stream_container_logs(request: Request, container_id: str, lines: int = 50, remove_color: bool = True):
     """Real-time display of docker logs -f xxxx functionality, use SSE to return log output in real-time
 
     Args:
         container_id: Container ID or container name (supports using name, ID changes after restart but name remains the same)
         lines: Number of initial lines to display, default 50 lines. Set to 0 to indicate unlimited (display all historical logs)
     """
+    logger.info(f'client={request.client.host}:{request.client.port}, container_id={container_id}, lines={lines}, remove_color={remove_color}')
+
     async def generate_logs():
         try:
             # Build docker logs command
