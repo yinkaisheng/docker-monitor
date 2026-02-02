@@ -13,7 +13,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-i', '--install', default=False, action='store_true', help='install as service[False]')
     parser.add_argument('-p', '--process', default=False, action='store_true', help='show self process[False]')
-    parser.add_argument('-n', '--nostdout', default=False, action='store_true', help='log to stdout[False]')
+    parser.add_argument('-n', '--nostdout', default=False, action='store_true', help='no log to stdout[False]')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='host[0.0.0.0]')
     parser.add_argument('--port', type=int, default=9949, help='port[9949]')
 
@@ -24,7 +24,7 @@ if __name__ == '__main__':
     if args.install:
         if sys.platform == 'linux':
             service_log_path = os.path.join(sutil.ExeDir, 'logs', 'stdout-docker-monitor.log')
-            sutil.install_as_service('docker-monitor', 'Docker Monitor Service', service_log_path,
+            sutil.install_service('docker-monitor', 'Docker Monitor Service', service_log_path,
                 args=f'--host {args.host} --port {args.port} --nostdout')
         else:
             print('install as service only support linux')

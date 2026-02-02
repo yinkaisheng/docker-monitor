@@ -166,12 +166,17 @@
                                         class="btn btn-sm btn-log">
                                         View Logs
                                     </button>
+                                    <button @click="restartContainer(container.Id, container.Name || container.shortId)"
+                                        :disabled="isRestarting" class="btn btn-sm btn-restart">
+                                        <span x-show="!isRestarting">Restart</span>
+                                        <span x-show="isRestarting">Restarting...</span>
+                                    </button>
                                     <template x-if="container.ComposeFile && container.ComposeFile !== '-'">
                                         <button
-                                            @click="restartContainer(container.Id, container.Name || container.shortId)"
-                                            :disabled="isRestarting" class="btn btn-sm btn-restart">
-                                            <span x-show="!isRestarting">Restart</span>
-                                            <span x-show="isRestarting">Restarting...</span>
+                                            @click="downupContainer(container.Id, container.Name || container.shortId)"
+                                            :disabled="isDownUping" class="btn btn-sm btn-downup">
+                                            <span x-show="!isDownUping">Down Up</span>
+                                            <span x-show="isDownUping">Down Up...</span>
                                         </button>
                                     </template>
                                 </div>
@@ -198,17 +203,19 @@
                             <input type="number" x-model.number="logFontSize" @change="updateLogFontSize()" min="10"
                                 max="24" class="font-size-input">
                         </label>
+                        <span class="log-modal-hint" title="Scroll up to pause auto-scroll; press End to follow latest">End = follow</span>
                         <button @click="closeLogModal()" class="close-btn">&times;</button>
                     </div>
                 </div>
-                <div class="log-container" x-ref="logContainer" :style="`font-size: ${logFontSize}px`"></div>
+                <div class="log-container" x-ref="logContainer" :style="`font-size: ${logFontSize}px`" tabindex="0"></div>
             </div>
         </div>
 
         <!-- Password Input Modal -->
         <div x-show="showPasswordModal" class="modal" x-cloak>
             <div class="password-modal-content">
-                <h3 x-text="`Restart Container: ${passwordModalTitle}`"></h3>
+                <h3 x-text="`${pendingAction === 'restart' ? 'Restart' : 'Down Up'} Container: ${passwordModalTitle}`">
+                </h3>
                 <div class="password-input-group">
                     <label for="usernameInput">Username:</label>
                     <input type="text" id="usernameInput" x-model="usernameInput" @keyup.enter="confirmPassword()"
@@ -227,32 +234,39 @@
             </div>
         </div>
 
-        <!-- Restart Log Modal -->
-        <div x-show="showRestartLogModal" class="modal" x-cloak>
+        <!-- DownUp Log Modal -->
+        <div x-show="showDownUpLogModal" class="modal" x-cloak>
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 x-text="`Restart Container: ${restartLogModalTitle}`"></h2>
+                    <h2 x-text="`Down Up Container: ${downUpLogModalTitle}`"></h2>
                     <div class="modal-header-controls">
                         <label class="font-size-control">
                             Font Size:
-                            <input type="number" x-model.number="restartLogFontSize"
-                                @change="updateRestartLogFontSize()" min="10" max="24" class="font-size-input">
+                            <input type="number" x-model.number="downUpLogFontSize" @change="updateDownUpLogFontSize()"
+                                min="10" max="24" class="font-size-input">
                         </label>
-                        <button @click="closeRestartLogModal()" class="close-btn">&times;</button>
+                        <button @click="closeDownUpLogModal()" class="close-btn">&times;</button>
                     </div>
                 </div>
-                <div class="restart-status" x-text="restartStatus"></div>
-                <div class="log-container" x-ref="restartLogContainer" :style="`font-size: ${restartLogFontSize}px`">
+                <div class="downup-status" x-text="downUpStatus"></div>
+                <div class="log-container" x-ref="downUpLogContainer" :style="`font-size: ${downUpLogFontSize}px`">
                 </div>
-                <div x-show="showRestartActions" class="restart-log-actions">
-                    <button x-show="restartError" @click="retryRestart()" class="btn btn-primary">
+                <div x-show="showDownUpActions" class="downup-log-actions">
+                    <button x-show="downUpError" @click="retryDownUp()" class="btn btn-primary">
                         Retry
                     </button>
-                    <button @click="closeRestartLogModal()" class="btn btn-secondary">
+                    <button @click="closeDownUpLogModal()" class="btn btn-secondary">
                         Close
                     </button>
                 </div>
             </div>
+        </div>
+
+        <!-- Non-blocking toast (Restart result, ESC to close) -->
+        <div x-show="showToast" x-cloak x-transition class="toast toast-success"
+            :class="{ 'toast-error': toastType === 'error' }" role="alert">
+            <span x-text="toastMessage"></span>
+            <button type="button" class="toast-close" @click="closeToast()" title="Close (Esc)">&times;</button>
         </div>
 
         <!-- GPU Tooltip (global) -->

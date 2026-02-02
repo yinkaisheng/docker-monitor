@@ -173,6 +173,11 @@ except ImportError:
     import logging
     import logging.handlers
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f'%(asctime)s %(levelname)s %(filename)s,%(lineno)d {Fore.Blue}T%(thread)d{Fore.Reset} {Fore.Cyan}%(funcName)s{Fore.Reset}: %(message)s',
+        # format=f'%(asctime)s %(levelname)s %(filename)s,%(lineno)d T%(thread)d %(funcName)s: %(message)s', # no color
+    )
     logger = logging.getLogger()
 
 
@@ -225,11 +230,7 @@ except ImportError:
         )
         file_handler.setFormatter(file_formatter)
         if log_to_stdout:
-            logging.basicConfig(
-                level=log_level,
-                format=f'%(asctime)s %(levelname)s %(filename)s,%(lineno)d {Fore.Blue}T%(thread)d{Fore.Reset} {Fore.Cyan}%(funcName)s{Fore.Reset}: %(message)s',
-                # format=f'%(asctime)s %(levelname)s %(filename)s,%(lineno)d T%(thread)d %(funcName)s: %(message)s', # no color
-            )
+            pass
         else:
             for handler in logger.handlers[:]:
                 logger.removeHandler(handler)
@@ -260,15 +261,14 @@ def remove_color_of_shell_text(stdout: str) -> str:
             result_parts.append(stdout[start:])
             break
         mpos = -1
-        if color_pos + 4 < text_len and stdout[color_pos + 4] == 'm':
+        if color_pos + 4 < text_len and stdout[color_pos + 4] == 'm':   # \x1b[XXm
             mpos = color_pos + 4
-        elif color_pos + 5 < text_len and stdout[color_pos + 5] == 'm':
+        elif color_pos + 5 < text_len and stdout[color_pos + 5] == 'm': # \x1b[XXXm
             mpos = color_pos + 5
-        elif color_pos + 6 < text_len and stdout[color_pos + 6] == 'm':
+        elif color_pos + 6 < text_len and stdout[color_pos + 6] == 'm': # \x1b[XXXXm
             mpos = color_pos + 6
         if mpos > 0:
-            if color_pos > start:
-                result_parts.append(stdout[start:color_pos])
+            result_parts.append(stdout[start:color_pos])
             start = mpos + 1
         else:
             start = color_pos + 2

@@ -16,7 +16,7 @@ function dockerMonitor() {
         pageWidth: 100,
         logLines: 50,
         logFontSize: 14,
-        restartLogFontSize: 14,
+        downUpLogFontSize: 14,
         theme: 'light',
 
         // Sorting
@@ -34,7 +34,9 @@ function dockerMonitor() {
         currentLogContainerName: null,
         logReconnectAttempts: 0,
         maxLogReconnectAttempts: 5,
+        isDownUping: false,
         isRestarting: false,
+        pendingAction: 'downup', // 'restart' | 'downup'
         logConnectionStatus: 'connecting', // 'connecting', 'connected', 'receiving'
 
         showPasswordModal: false,
@@ -42,15 +44,25 @@ function dockerMonitor() {
         usernameInput: 'admin',
         passwordInput: '',
         passwordError: '',
-        pendingRestartContainerId: null,
-        pendingRestartContainerName: null,
+        pendingDownUpContainerId: null,
+        pendingDownUpContainerName: null,
 
-        showRestartLogModal: false,
-        restartLogModalTitle: '',
-        restartStatus: '',
-        restartError: false,
-        showRestartActions: false,
-        currentRestartReader: null,
+        showDownUpLogModal: false,
+        downUpLogModalTitle: '',
+        downUpStatus: '',
+        downUpError: false,
+        showDownUpActions: false,
+        currentDownUpReader: null,
+
+        // Log modal: when true, new logs auto-scroll to bottom; when user scrolls up, false; End key sets true
+        logStickToBottom: true,
+        logContainerScrollHandler: null,
+
+        // Non-blocking toast (Restart result, ESC to close)
+        showToast: false,
+        toastMessage: '',
+        toastType: 'success', // 'success' | 'error'
+        toastTimeoutId: null,
 
         /**
          * Initialize component
@@ -68,16 +80,53 @@ function dockerMonitor() {
         setupEscapeKeyHandler() {
             document.addEventListener('keydown', (event) => {
                 if (event.key === 'Escape') {
-                    // Close modals in priority order (most specific first)
-                    if (this.showRestartLogModal) {
-                        this.closeRestartLogModal();
+                    // Close toast first (non-blocking), then modals
+                    if (this.showToast) {
+                        this.closeToast();
+                    } else if (this.showDownUpLogModal) {
+                        this.closeDownUpLogModal();
                     } else if (this.showLogModal) {
                         this.closeLogModal();
                     } else if (this.showPasswordModal) {
                         this.closePasswordModal();
                     }
+                } else if (event.key === 'End' && this.showLogModal) {
+                    // End key: resume auto-scroll to bottom for log modal
+                    this.logStickToBottom = true;
+                    const c = this.$refs.logContainer;
+                    if (c) c.scrollTop = c.scrollHeight;
                 }
             });
+        },
+
+        /**
+         * Show non-blocking toast (auto-hide after 4s, ESC to close). Does not block auto-refresh.
+         * @param {string} message - Message text
+         * @param {string} type - 'success' | 'error'
+         */
+        showToastMessage(message, type = 'success') {
+            if (this.toastTimeoutId) {
+                clearTimeout(this.toastTimeoutId);
+                this.toastTimeoutId = null;
+            }
+            this.toastMessage = message;
+            this.toastType = type;
+            this.showToast = true;
+            this.toastTimeoutId = setTimeout(() => {
+                this.closeToast();
+            }, 4000);
+        },
+
+        /**
+         * Close toast and clear auto-hide timer
+         */
+        closeToast() {
+            if (this.toastTimeoutId) {
+                clearTimeout(this.toastTimeoutId);
+                this.toastTimeoutId = null;
+            }
+            this.showToast = false;
+            this.toastMessage = '';
         },
 
         /**
@@ -108,10 +157,10 @@ function dockerMonitor() {
                 this.logFontSize = parseInt(savedLogFontSize, 10);
             }
 
-            // Load restart log font size
-            const savedRestartLogFontSize = localStorage.getItem('restartLogFontSize');
-            if (savedRestartLogFontSize !== null) {
-                this.restartLogFontSize = parseInt(savedRestartLogFontSize, 10);
+            // Load DownUp log font size
+            const savedDownUpLogFontSize = localStorage.getItem('downUpLogFontSize');
+            if (savedDownUpLogFontSize !== null) {
+                this.downUpLogFontSize = parseInt(savedDownUpLogFontSize, 10);
             }
 
             // Load theme
@@ -123,7 +172,7 @@ function dockerMonitor() {
             // Apply settings
             this.updatePageWidth();
             this.updateTheme();
-            this.updateRestartLogFontSize();
+            this.updateDownUpLogFontSize();
 
             // Setup auto refresh if interval > 0
             if (this.refreshInterval > 0) {
@@ -180,13 +229,13 @@ function dockerMonitor() {
         },
 
         /**
-         * Update restart log font size
+         * Update DownUp log font size
          */
-        updateRestartLogFontSize() {
-            localStorage.setItem('restartLogFontSize', this.restartLogFontSize.toString());
-            const restartLogContainer = this.$refs.restartLogContainer;
-            if (restartLogContainer) {
-                restartLogContainer.style.fontSize = `${this.restartLogFontSize}px`;
+        updateDownUpLogFontSize() {
+            localStorage.setItem('downUpLogFontSize', this.downUpLogFontSize.toString());
+            const downUpLogContainer = this.$refs.downUpLogContainer;
+            if (downUpLogContainer) {
+                downUpLogContainer.style.fontSize = `${this.downUpLogFontSize}px`;
             }
         },
 
@@ -756,7 +805,13 @@ function dockerMonitor() {
             this.currentLogContainerId = containerId;
             this.currentLogContainerName = containerName || containerId;
             this.showLogModal = true;
+            this.logStickToBottom = true;
             this.logConnectionStatus = 'connecting';
+
+            this.$nextTick(() => {
+                const logContainer = this.$refs.logContainer;
+                if (logContainer) this.attachLogContainerScrollListener(logContainer);
+            });
 
             // Clear previous logs
             const logContainer = this.$refs.logContainer;
@@ -842,8 +897,25 @@ function dockerMonitor() {
             span.textContent = text;
             container.appendChild(span);
 
-            // Auto scroll to bottom
-            container.scrollTop = container.scrollHeight;
+            // Auto scroll to bottom only for log modal when user is "stuck to bottom"; DownUp log always scrolls
+            const isLogModalContainer = this.$refs.logContainer && container === this.$refs.logContainer;
+            if (!isLogModalContainer || this.logStickToBottom) {
+                container.scrollTop = container.scrollHeight;
+            }
+        },
+
+        /** Attach scroll listener to log container to update logStickToBottom when user scrolls */
+        attachLogContainerScrollListener(el) {
+            if (this.logContainerScrollHandler) {
+                this.logContainerScrollHandler.el.removeEventListener('scroll', this.logContainerScrollHandler.handler);
+                this.logContainerScrollHandler = null;
+            }
+            const handler = () => {
+                const atBottom = el.scrollHeight - el.clientHeight <= el.scrollTop + 15;
+                this.logStickToBottom = atBottom;
+            };
+            el.addEventListener('scroll', handler);
+            this.logContainerScrollHandler = { el, handler };
         },
 
         /**
@@ -852,6 +924,10 @@ function dockerMonitor() {
         closeLogModal() {
             this.showLogModal = false;
             this.logConnectionStatus = 'connecting';
+            if (this.logContainerScrollHandler) {
+                this.logContainerScrollHandler.el.removeEventListener('scroll', this.logContainerScrollHandler.handler);
+                this.logContainerScrollHandler = null;
+            }
             if (this.currentLogEventSource) {
                 this.currentLogEventSource.close();
                 this.currentLogEventSource = null;
@@ -976,13 +1052,30 @@ function dockerMonitor() {
         },
 
         /**
-         * Restart container
+         * Down Up container
+         * @param {string} containerId - Container ID
+         * @param {string} containerName - Container name
+         */
+        /**
+         * Restart container (docker restart)
          * @param {string} containerId - Container ID
          * @param {string} containerName - Container name
          */
         restartContainer(containerId, containerName) {
-            this.pendingRestartContainerId = containerId;
-            this.pendingRestartContainerName = containerName;
+            this.pendingAction = 'restart';
+            this.pendingDownUpContainerId = containerId;
+            this.pendingDownUpContainerName = containerName;
+            this.passwordModalTitle = containerName || containerId.substring(0, 12);
+            this.usernameInput = 'admin';
+            this.passwordInput = '';
+            this.passwordError = '';
+            this.showPasswordModal = true;
+        },
+
+        downupContainer(containerId, containerName) {
+            this.pendingAction = 'downup';
+            this.pendingDownUpContainerId = containerId;
+            this.pendingDownUpContainerName = containerName;
             this.passwordModalTitle = containerName || containerId.substring(0, 12);
             this.usernameInput = 'admin';
             this.passwordInput = '';
@@ -991,7 +1084,7 @@ function dockerMonitor() {
         },
 
         /**
-         * Confirm password and start restart
+         * Confirm password and start DownUp
          */
         async confirmPassword() {
             if (!this.usernameInput || !this.usernameInput.trim()) {
@@ -1007,33 +1100,67 @@ function dockerMonitor() {
             this.passwordError = '';
             this.showPasswordModal = false;
 
-            // Show restart log modal
-            this.restartLogModalTitle = this.pendingRestartContainerName || this.pendingRestartContainerId.substring(0, 12);
-            this.showRestartLogModal = true;
-            this.restartStatus = 'Restarting container...';
-            this.restartError = false;
-            this.showRestartActions = false;
-            this.isRestarting = true;
-
-            const restartLogContainer = this.$refs.restartLogContainer;
-            if (restartLogContainer) {
-                restartLogContainer.innerHTML = '';
+            if (this.pendingAction === 'restart') {
+                const containerName = this.pendingDownUpContainerName || this.pendingDownUpContainerId.substring(0, 12);
+                await this.executeRestart(containerName, this.usernameInput.trim(), this.passwordInput);
+                return;
             }
 
-            // Execute restart with SSE
-            await this.executeRestart(this.pendingRestartContainerId, this.usernameInput.trim(), this.passwordInput, restartLogContainer);
+            // Show DownUp log modal
+            this.downUpLogModalTitle = this.pendingDownUpContainerName || this.pendingDownUpContainerId.substring(0, 12);
+            this.showDownUpLogModal = true;
+            this.downUpStatus = 'DownUp...';
+            this.downUpError = false;
+            this.showDownUpActions = false;
+            this.isDownUping = true;
+
+            const downUpLogContainer = this.$refs.downUpLogContainer;
+            if (downUpLogContainer) {
+                downUpLogContainer.innerHTML = '';
+            }
+
+            // Execute DownUp with SSE
+            await this.executeDownUp(this.pendingDownUpContainerId, this.usernameInput.trim(), this.passwordInput, downUpLogContainer);
         },
 
         /**
-         * Execute restart using SSE stream
+         * Execute restart (sync API, wait ~3s then return)
+         * @param {string} containerName - Container name (from list)
+         * @param {string} username - Username
+         * @param {string} password - Password
+         */
+        async executeRestart(containerName, username, password) {
+            this.isRestarting = true;
+            try {
+                const response = await fetch(`/api/containers/${encodeURIComponent(containerName)}/restart`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await response.json().catch(() => ({}));
+                if (data.code === 0) {
+                    this.refreshContainers();
+                    this.showToastMessage('Restart successful', 'success');
+                } else {
+                    this.showToastMessage(data.message || `Restart failed: ${response.status}`, 'error');
+                }
+            } catch (err) {
+                this.showToastMessage(`Restart failed: ${err.message}`, 'error');
+            } finally {
+                this.isRestarting = false;
+            }
+        },
+
+        /**
+         * Execute DownUp using SSE stream
          * @param {string} containerId - Container ID
          * @param {string} username - Username
          * @param {string} password - Password
          * @param {HTMLElement} logContainer - Log container element
          */
-        async executeRestart(containerId, username, password, logContainer) {
+        async executeDownUp(containerId, username, password, logContainer) {
             try {
-                const response = await fetch(`/api/containers/${containerId}/restart/stream`, {
+                const response = await fetch(`/api/containers/${containerId}/downup/stream`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -1050,7 +1177,7 @@ function dockerMonitor() {
                 const decoder = new TextDecoder();
                 let buffer = '';
 
-                this.currentRestartReader = reader;
+                this.currentDownUpReader = reader;
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -1064,53 +1191,53 @@ function dockerMonitor() {
                         if (line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.substring(6));
-                                this.handleRestartEvent(data, logContainer);
+                                this.handleDownUpEvent(data, logContainer);
                             } catch (error) {
-                                console.error('Failed to parse restart event:', error);
+                                console.error('Failed to parse DownUp event:', error);
                             }
                         }
                     }
                 }
             } catch (error) {
-                console.error('Restart failed:', error);
+                console.error('DownUp failed:', error);
                 this.appendLog(logContainer, `[Error] ${error.message}`, true);
-                this.restartStatus = `Restart failed: ${error.message}`;
-                this.restartError = true;
-                this.showRestartActions = true;
-                this.isRestarting = false;
+                this.downUpStatus = `DownUp failed: ${error.message}`;
+                this.downUpError = true;
+                this.showDownUpActions = true;
+                this.isDownUping = false;
             } finally {
-                this.currentRestartReader = null;
+                this.currentDownUpReader = null;
             }
         },
 
         /**
-         * Handle restart SSE event
+         * Handle DownUp SSE event
          * @param {Object} data - Event data
          * @param {HTMLElement} logContainer - Log container element
          */
-        handleRestartEvent(data, logContainer) {
+        handleDownUpEvent(data, logContainer) {
             if (data.type === 'step') {
                 this.appendLog(logContainer, `[Step] ${data.message}\n`, false);
 
                 if (data.step === 'password_verified') {
-                    this.restartStatus = 'Password verified, starting restart...';
+                    this.downUpStatus = 'Password verified, starting DownUp...';
                 } else if (data.step === 'down_start') {
-                    this.restartStatus = 'Executing docker compose down...';
+                    this.downUpStatus = 'Executing docker compose down...';
                 } else if (data.step === 'down_completed') {
-                    this.restartStatus = 'docker compose down completed, starting up...';
+                    this.downUpStatus = 'docker compose down completed, starting up...';
                 } else if (data.step === 'up_start') {
-                    this.restartStatus = 'Executing docker compose up -d...';
+                    this.downUpStatus = 'Executing docker compose up -d...';
                 } else if (data.step === 'up_completed') {
-                    this.restartStatus = 'docker compose up completed, refreshing list...';
+                    this.downUpStatus = 'docker compose up completed, refreshing list...';
                 }
             } else if (data.type === 'output') {
                 this.appendLog(logContainer, data.data, data.stream === 'stderr');
             } else if (data.type === 'success') {
-                this.appendLog(logContainer, '[Success] Restart completed successfully!\n', false);
-                this.restartStatus = 'Restart successful!';
-                this.restartError = false;
-                this.showRestartActions = true;
-                this.isRestarting = false;
+                this.appendLog(logContainer, '[Success] DownUp completed successfully!\n', false);
+                this.downUpStatus = 'DownUp successful!';
+                this.downUpError = false;
+                this.showDownUpActions = true;
+                this.isDownUping = false;
 
                 // Refresh container list
                 setTimeout(() => {
@@ -1118,19 +1245,19 @@ function dockerMonitor() {
                 }, 1000);
             } else if (data.type === 'error') {
                 this.appendLog(logContainer, `[Error] ${data.data}\n`, true);
-                this.restartStatus = `Restart failed: ${data.data}`;
-                this.restartError = true;
-                this.showRestartActions = true;
-                this.isRestarting = false;
+                this.downUpStatus = `DownUp failed: ${data.data}`;
+                this.downUpError = true;
+                this.showDownUpActions = true;
+                this.isDownUping = false;
             }
         },
 
         /**
-         * Retry restart
+         * Retry DownUp
          */
-        retryRestart() {
-            this.closeRestartLogModal();
-            this.restartContainer(this.pendingRestartContainerId, this.pendingRestartContainerName);
+        retryDownUp() {
+            this.closeDownUpLogModal();
+            this.downupContainer(this.pendingDownUpContainerId, this.pendingDownUpContainerName);
         },
 
         /**
@@ -1143,19 +1270,19 @@ function dockerMonitor() {
         },
 
         /**
-         * Close restart log modal
+         * Close DownUp log modal
          */
-        closeRestartLogModal() {
-            this.showRestartLogModal = false;
-            this.restartStatus = '';
-            this.restartError = false;
-            this.showRestartActions = false;
-            this.isRestarting = false;
+        closeDownUpLogModal() {
+            this.showDownUpLogModal = false;
+            this.downUpStatus = '';
+            this.downUpError = false;
+            this.showDownUpActions = false;
+            this.isDownUping = false;
 
             // Close reader if active
-            if (this.currentRestartReader) {
-                this.currentRestartReader.cancel();
-                this.currentRestartReader = null;
+            if (this.currentDownUpReader) {
+                this.currentDownUpReader.cancel();
+                this.currentDownUpReader = null;
             }
         },
 

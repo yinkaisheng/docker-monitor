@@ -522,10 +522,79 @@ async def test_healthcheck(container_id: str):
         raise HTTPException(status_code=500, detail=f'Healthcheck test failed: {str(e)}')
 
 
-@router.post("/api/containers/{container_id}/restart", response_model=models.ResponseModel,
+@router.post("/api/containers/{container_name}/restart", response_model=models.ResponseModel,
              summary='Restart docker container',
-             description='Restart specified container (via docker compose)')
-async def restart_container(request: Request, container_id: str,
+             description='Restart specified container via docker restart (wait for command to complete, ~3s). Pass container name from frontend.')
+async def restart_container(request: Request, container_name: str,
+                            username: str = Body('admin', embed=True),
+                            password: str = Body(..., embed=True)):
+    """Restart container API: execute docker restart <container_name>, wait for completion then return.
+    Frontend passes container name (from container list); no need to look up name from id.
+
+    Args:
+        request: FastAPI request object
+        container_name: Container name (from frontend list)
+        password: Password (from request body)
+        username: Username (default 'admin', from request body)
+    """
+    logger.info(f'client={request.client.host}:{request.client.port}, container_name={container_name}, username={username}')
+
+    if not HAS_BCRYPT:
+        logger.error('bcrypt library not installed, cannot verify password')
+        return {
+            'code': 500,
+            'message': 'Server configuration error: bcrypt library not installed, please run: pip install bcrypt',
+            'data': None
+        }
+
+    password_hash = get_restart_password_hash(username)
+    if not password_hash:
+        logger.error(f'Password file not configured for user "{username}", rejecting restart request')
+        return {
+            'code': 401,
+            'message': f'Password verification failed: user "{username}" not found or password not configured',
+            'data': None
+        }
+
+    if not verify_password(password, password_hash):
+        logger.warning(f'Password verification failed for user "{username}", client IP: {request.client.host}')
+        return {
+            'code': 401,
+            'message': 'Password verification failed',
+            'data': None
+        }
+
+    try:
+        cmd = ['docker', 'restart', container_name]
+        logger.info(f'executing docker restart {container_name}')
+        result = await putil.a_run_cmd_monitored(
+            cmd,
+            print_cmd=True,
+            print_output=True,
+            print_return=True
+        )
+
+        if result.exit_code != 0:
+            return {
+                'code': 2,
+                'message': f'docker restart failed, exit code: {result.exit_code}',
+                'data': {'stdout': result.stdout, 'stderr': result.stderr}
+            }
+
+        return {
+            'code': 0,
+            'message': 'success',
+            'data': {'container_name': container_name, 'stdout': result.stdout}
+        }
+    except Exception as e:
+        logger.error(f'failed to restart container: {e!r}')
+        raise HTTPException(status_code=500, detail=f'Failed to restart container: {str(e)}')
+
+
+@router.post("/api/containers/{container_id}/downup", response_model=models.ResponseModel,
+             summary='Down and up docker container',
+             description='Down and up specified container (via docker compose down + up -d)')
+async def downup_container(request: Request, container_id: str,
                             username: str = Body('admin', embed=True),
                             password: str = Body(..., embed=True)):
     """Restart docker API, input docker id, get compose file path, execute docker compose down and up
@@ -652,10 +721,10 @@ async def restart_container(request: Request, container_id: str,
         raise HTTPException(status_code=500, detail=f'Failed to restart container: {str(e)}')
 
 
-@router.post("/api/containers/{container_id}/restart/stream", summary='Restart docker container (SSE stream)',
-             description='''Restart specified container (via docker compose),
+@router.post("/api/containers/{container_id}/downup/stream", summary='Down and up docker container (SSE stream)',
+             description='''Down and up specified container (via docker compose),
 use SSE to return execution steps and command output in real-time''')
-async def restart_container_stream(request: Request, container_id: str,
+async def downup_container_stream(request: Request, container_id: str,
                                    username: str = Body('admin', embed=True),
                                    password: str = Body(..., embed=True)):
     """SSE stream version of restart docker API, returns execution steps and command output in real-time

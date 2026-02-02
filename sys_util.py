@@ -254,20 +254,21 @@ def enum_process(search: str = None, where: str = 'all', terminate: bool = False
             pass
 
 
-def install_as_service(service_name: str, service_description: str, service_log_path: str, args: str=''):
-    '''only for Linux'''
-    user_name = os.getenv('USER')
-    os.makedirs(os.path.dirname(service_log_path), exist_ok=True)
-    service_txt = f'''# /etc/systemd/system/{service_name}.service
+def install_service(name: str, description: str, log_path: str, args: str='', run_as_user: str = None):
+    '''only for Linux. run_as_user: 指定运行服务的用户，为 None 时自动取 SUDO_USER/USER'''
+    # 未指定时：用 SUDO_USER 获取“真正”的当前用户（sudo 时 USER 会是 root）
+    user_name = run_as_user if run_as_user else (os.getenv('SUDO_USER') or os.getenv('USER') or 'root')
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    service_txt = f'''# /etc/systemd/system/{name}.service
 [Unit]
-Description={service_description}
+Description={description}
 After=network.target
 
 [Service]
 ExecStart={PythonExePath} {ExePath} {args}
 WorkingDirectory={ExeDir}
-StandardOutput=file:{service_log_path}
-StandardError=file:{service_log_path}
+StandardOutput=file:{log_path}
+StandardError=file:{log_path}
 Restart=always
 RestartSec=10
 User={user_name}
@@ -276,28 +277,28 @@ User={user_name}
 WantedBy=multi-user.target
 '''
     print(service_txt)
-    with open(f'/etc/systemd/system/{service_name}.service', 'wt', encoding='utf-8') as fout:
+    with open(f'/etc/systemd/system/{name}.service', 'wt', encoding='utf-8') as fout:
         fout.write(service_txt)
-    with open(f'/etc/logrotate.d/{service_name}', 'wt', encoding='utf-8') as fout:
-        fout.write(f'''# /etc/logrotate.d/{service_name}
-{service_log_path} {{
+    with open(f'/etc/logrotate.d/{name}', 'wt', encoding='utf-8') as fout:
+        fout.write(f'''# /etc/logrotate.d/{name}
+{log_path} {{
     daily
     rotate 30
     compress
     delaycompress
     missingok
-    create 0644 root root
+    create 0644 {user_name} {user_name}
     copytruncate
     postrotate
-        systemctl restart {service_name}.service
+        systemctl restart {name}.service
     endscript
 }}
 ''')
     cmds = [
         'sudo systemctl daemon-reload',
-        f'sudo systemctl enable {service_name}.service',
-        f'sudo systemctl start {service_name}.service',
-        f'sudo systemctl status {service_name}.service',
+        f'sudo systemctl enable {name}.service',
+        f'sudo systemctl start {name}.service',
+        f'sudo systemctl status {name}.service',
     ]
     for cmd in cmds:
         print(f'run {Fore.Cyan}{cmd}{Fore.Reset}')
@@ -353,7 +354,7 @@ cd "$SCRIPT_DIR"
             print(f'{line}')
 
 
-def install_timed_service(service_name: str, service_description: str,
+def install_timer_service(service_name: str, service_description: str,
                           sh_content: str='',
                           at_hour: int = 4, at_minute: int = 0):
     '''only for Linux'''
@@ -460,7 +461,7 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') call {docker_compose_cmd} up -d"
 {docker_compose_cmd} -f "{docker_compose_file}" up -d
 echo "$(date '+%Y-%m-%d %H:%M:%S') call {docker_compose_cmd} up -d done"
 '''
-    install_timed_service(service_name=service_name, service_description=f'Restart {service_name} docker service',
+    install_timer_service(service_name=service_name, service_description=f'Restart {service_name} docker service',
                           sh_content=sh_content, at_hour=at_hour, at_minute=at_minute)
 
 
