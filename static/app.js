@@ -14,7 +14,7 @@ function dockerMonitor() {
         refreshInterval: 0,
         autoRefreshTimer: null,
         pageWidth: 100,
-        logLines: 50,
+        logLines: 500,
         logFontSize: 14,
         downUpLogFontSize: 14,
         theme: 'light',
@@ -29,6 +29,7 @@ function dockerMonitor() {
         // Modals
         showLogModal: false,
         logModalTitle: '',
+        logStreamEnded: '',
         currentLogEventSource: null,
         currentLogContainerId: null,
         currentLogContainerName: null,
@@ -802,6 +803,7 @@ function dockerMonitor() {
          */
         viewLogs(containerId, containerName) {
             this.logModalTitle = containerName || containerId.substring(0, 12);
+            this.logStreamEnded = '';
             this.currentLogContainerId = containerId;
             this.currentLogContainerName = containerName || containerId;
             this.showLogModal = true;
@@ -854,7 +856,7 @@ function dockerMonitor() {
                     } else if (data.type === 'error') {
                         this.appendLog(logContainer, `[Error] ${data.data}\n`, true);
                     } else if (data.type === 'end') {
-                        this.appendLog(logContainer, `[Log stream ended, exit code: ${data.exit_code}]\n`, false);
+                        this.logStreamEnded = 'Log stream ended';
                         this.currentLogEventSource.close();
                         this.currentLogEventSource = null;
                         this.logConnectionStatus = 'connecting';
@@ -919,10 +921,56 @@ function dockerMonitor() {
         },
 
         /**
+         * Get current log content from log container (plain text)
+         * @returns {string}
+         */
+        getLogContent() {
+            const container = this.$refs.logContainer;
+            if (!container) return '';
+            return container.innerText || container.textContent || '';
+        },
+
+        /**
+         * Copy log content to clipboard
+         */
+        async copyLogContent() {
+            const text = this.getLogContent();
+            if (!text.trim()) {
+                this.showToastMessage('Log is empty', 'error');
+                return;
+            }
+            const ok = await this.copyToClipboard(text);
+            if (ok) this.showToastMessage('Log copied to clipboard', 'success');
+            else this.showToastMessage('Failed to copy log', 'error');
+        },
+
+        /**
+         * Download log content as file
+         */
+        downloadLogContent() {
+            const text = this.getLogContent();
+            if (!text.trim()) {
+                this.showToastMessage('Log is empty', 'error');
+                return;
+            }
+            const name = (this.logModalTitle || 'container-log').replace(/[/\\?*:"<>|]/g, '_');
+            const filename = `${name}_${new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '')}.log`;
+            const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+            this.showToastMessage('Log downloaded', 'success');
+        },
+
+        /**
          * Close log modal
          */
         closeLogModal() {
             this.showLogModal = false;
+            this.logStreamEnded = '';
             this.logConnectionStatus = 'connecting';
             if (this.logContainerScrollHandler) {
                 this.logContainerScrollHandler.el.removeEventListener('scroll', this.logContainerScrollHandler.handler);

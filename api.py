@@ -870,7 +870,7 @@ async def downup_container_stream(request: Request, container_id: str,
 
 @router.get("/api/containers/{container_id}/logs", summary='View container logs in real-time',
             description='Use SSE to return container logs in real-time')
-async def stream_container_logs(request: Request, container_id: str, lines: int = 50, remove_color: bool = True):
+async def stream_container_logs(request: Request, container_id: str, lines: int = 500, remove_color: bool = True):
     """Real-time display of docker logs -f xxxx functionality, use SSE to return log output in real-time
 
     Args:
@@ -879,7 +879,28 @@ async def stream_container_logs(request: Request, container_id: str, lines: int 
     """
     logger.info(f'client={request.client.host}:{request.client.port}, container_id={container_id}, lines={lines}, remove_color={remove_color}')
 
+    LOG_BATCH_INTERVAL = 0.1  # seconds: batch multiple log lines into one SSE message to reduce message count
+    if lines < 0:
+        lines = 500
+
     async def generate_logs():
+        log_buffer: list[str] = []
+        last_flush_time = time.monotonic()
+        output_count = 0
+        flush_count = 1000 if lines == 0 else (lines // 5)
+
+        def flush_log_buffer():
+            nonlocal last_flush_time
+            if log_buffer:
+                chunk = ''.join(log_buffer)
+                if remove_color:
+                    chunk = remove_color_of_shell_text(chunk)
+                log_buffer.clear()
+                last_flush_time = time.monotonic()
+                logger.debug(f'flushing log buffer, chunk length: {len(chunk)}')
+                return f"data: {json.dumps({'type': 'log', 'data': chunk}, ensure_ascii=False)}\n\n"
+            return None
+
         try:
             # Build docker logs command
             # If lines > 0, use -n parameter to limit initial lines; if lines = 0, no limit (display all historical logs)
@@ -896,29 +917,47 @@ async def stream_container_logs(request: Request, container_id: str, lines: int 
                 cmd,
                 print_cmd=False,
                 print_return=False,
-                timeout_interval=1
+                timeout_interval=0.5,
             ):
                 if output_type == 'stdout':
-                    # Send SSE format data (normal log output)
-                    if remove_color:
-                        value = remove_color_of_shell_text(value)
-                    yield f"data: {json.dumps({'type': 'log', 'data': value}, ensure_ascii=False)}\n\n"
+                    output_count += 1
+                    log_buffer.append(value)
+                    if output_count % flush_count == 1 or time.monotonic() - last_flush_time >= LOG_BATCH_INTERVAL:
+                        msg = flush_log_buffer()
+                        if msg:
+                            yield msg
                 elif output_type == 'stderr':
-                    # stderr is also treated as normal log, because many applications (such as Python logging) output logs to stderr
-                    # Real errors should be Docker command execution failures, not log output inside the container
-                    if remove_color:
-                        value = remove_color_of_shell_text(value)
-                    yield f"data: {json.dumps({'type': 'log', 'data': value}, ensure_ascii=False)}\n\n"
+                    output_count += 1
+                    log_buffer.append(value)
+                    if output_count % flush_count == 1 or time.monotonic() - last_flush_time >= LOG_BATCH_INTERVAL:
+                        msg = flush_log_buffer()
+                        if msg:
+                            yield msg
                 elif output_type == 'return':
+                    msg = flush_log_buffer()
+                    if msg:
+                        yield msg
                     yield f"data: {json.dumps({'type': 'end', 'exit_code': value}, ensure_ascii=False)}\n\n"
                     break
                 elif output_type == 'exception':
-                    # This is a real error (Docker command execution failed)
-                    yield f"data: {json.dumps({'type': 'error', 'data': f'Exception: {value!r}'}, ensure_ascii=False)}\n\n"
+                    ex = value
+                    msg = flush_log_buffer()
+                    if msg:
+                        yield msg
+                    yield f"data: {json.dumps({'type': 'error', 'data': f'Exception: {ex!r}'}, ensure_ascii=False)}\n\n"
                     break
-        except Exception as e:
-            logger.error(f'failed to get container logs: {e!r}')
-            yield f"data: {json.dumps({'type': 'error', 'data': f'Failed to get container logs: {str(e)}'}, ensure_ascii=False)}\n\n"
+                elif output_type == 'timeout':
+                    # No new log from process; flush buffer if we have data and interval passed
+                    if time.monotonic() - last_flush_time >= LOG_BATCH_INTERVAL:
+                        msg = flush_log_buffer()
+                        if msg:
+                            yield msg
+        except Exception as ex:
+            logger.error(f'failed to get container logs: {ex!r}')
+            msg = flush_log_buffer()
+            if msg:
+                yield msg
+            yield f"data: {json.dumps({'type': 'error', 'data': f'Failed to get container logs: {ex!r}'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         generate_logs(),

@@ -16,6 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('-n', '--nostdout', default=False, action='store_true', help='no log to stdout[False]')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='host[0.0.0.0]')
     parser.add_argument('--port', type=int, default=9949, help='port[9949]')
+    parser.add_argument('--log-level', type=str, default='info', help='log level[info]')
 
     args = parser.parse_args()
 
@@ -39,7 +40,7 @@ if __name__ == '__main__':
 
     log_dir = './logs'
     log_to_stdout = not args.nostdout
-    config_logger(logger, log_level='info', log_dir=log_dir, log_file='docker-monitor.log',
+    config_logger(logger, log_level=args.log_level, log_dir=log_dir, log_file='docker-monitor.log',
                   backup_count=14, log_to_stdout=log_to_stdout)
     if not log_to_stdout:
         log(f'pid {os.getpid()} command: {sutil.PythonExePath} {sys.argv} \nstarts server, config=\n{Fore.Cyan}{args}{Fore.Reset}')

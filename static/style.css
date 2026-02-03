@@ -130,6 +130,17 @@ h1 {
     background-color: #138496;
 }
 
+.btn-log-copy,
+.btn-log-download {
+    background-color: #6c757d;
+    color: white;
+}
+
+.btn-log-copy:hover:not(:disabled),
+.btn-log-download:hover:not(:disabled) {
+    background-color: #5a6268;
+}
+
 .btn-restart {
     background-color: #fd7e14;
     color: white;

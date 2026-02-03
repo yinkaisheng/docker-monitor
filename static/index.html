@@ -196,8 +196,10 @@
         <div x-show="showLogModal" class="modal" x-cloak>
             <div class="modal-content log-modal-content">
                 <div class="modal-header">
-                    <h2 x-text="`Container Logs - ${logModalTitle}`"></h2>
+                    <h2 x-text="logStreamEnded ? `Container Logs - ${logModalTitle} — ${logStreamEnded}` : `Container Logs - ${logModalTitle}`"></h2>
                     <div class="modal-header-controls">
+                        <button type="button" class="btn btn-sm btn-log-copy" @click="copyLogContent()" title="Copy log to clipboard">Copy</button>
+                        <button type="button" class="btn btn-sm btn-log-download" @click="downloadLogContent()" title="Download log as file">Download</button>
                         <label class="font-size-control">
                             Font Size:
                             <input type="number" x-model.number="logFontSize" @change="updateLogFontSize()" min="10"
