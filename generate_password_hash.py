@@ -12,12 +12,11 @@ Or specify password directly:
 Or interactive input:
     python generate_password_hash.py --interactive
 """
-
+import os
 import sys
+import json
 import getpass
 import argparse
-import json
-import os
 
 try:
     import bcrypt
@@ -146,6 +145,7 @@ Examples:
     )
 
     args = parser.parse_args()
+    os.chdir(os.path.dirname(__file__))
 
     # Determine output file
     if args.output:
