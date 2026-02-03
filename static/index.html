@@ -7,7 +7,7 @@
     <title>Docker Container Monitor</title>
     <link rel="stylesheet" href="./style.css">
     <!-- Alpine.js CDN -->
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script defer src="./alpinejs-3.15.8-min.js"></script>
 </head>
 
 <body>
@@ -196,20 +196,26 @@
         <div x-show="showLogModal" class="modal" x-cloak>
             <div class="modal-content log-modal-content">
                 <div class="modal-header">
-                    <h2 x-text="logStreamEnded ? `Container Logs - ${logModalTitle} — ${logStreamEnded}` : `Container Logs - ${logModalTitle}`"></h2>
+                    <h2
+                        x-text="logStreamEnded ? `Container Logs - ${logModalTitle} — ${logStreamEnded}` : `Container Logs - ${logModalTitle}`">
+                    </h2>
                     <div class="modal-header-controls">
-                        <button type="button" class="btn btn-sm btn-log-copy" @click="copyLogContent()" title="Copy log to clipboard">Copy</button>
-                        <button type="button" class="btn btn-sm btn-log-download" @click="downloadLogContent()" title="Download log as file">Download</button>
+                        <button type="button" class="btn btn-sm btn-log-copy" @click="copyLogContent()"
+                            title="Copy log to clipboard">Copy</button>
+                        <button type="button" class="btn btn-sm btn-log-download" @click="downloadLogContent()"
+                            title="Download log as file">Download</button>
                         <label class="font-size-control">
                             Font Size:
                             <input type="number" x-model.number="logFontSize" @change="updateLogFontSize()" min="10"
                                 max="24" class="font-size-input">
                         </label>
-                        <span class="log-modal-hint" title="Scroll up to pause auto-scroll; press End to follow latest">End = follow</span>
+                        <span class="log-modal-hint"
+                            title="Scroll up to pause auto-scroll; press End to follow latest">End = follow</span>
                         <button @click="closeLogModal()" class="close-btn">&times;</button>
                     </div>
                 </div>
-                <div class="log-container" x-ref="logContainer" :style="`font-size: ${logFontSize}px`" tabindex="0"></div>
+                <div class="log-container" x-ref="logContainer" :style="`font-size: ${logFontSize}px`" tabindex="0">
+                </div>
             </div>
         </div>
 
