@@ -26,6 +26,12 @@ A Docker container monitoring tool with a web UI. The backend is built with **Fa
 
 ## Install & Run
 
+Ensure the current user is in the `docker` group so that Docker commands can be run without `sudo`:
+```bash
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
 ```bash
 pip install fastapi fastapi-offline uvicorn[standard] httpx psutil bcrypt
 python gen_git_commit.py # generate version.py
