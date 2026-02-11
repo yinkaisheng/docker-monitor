@@ -11,6 +11,7 @@ import functools
 import traceback
 import subprocess
 from datetime import datetime, timedelta
+from typing import Any, Dict
 
 import psutil
 
@@ -144,7 +145,7 @@ def get_partition(path: str) -> str:
     return partition
 
 
-def disk_usage(path: str) -> dict[str, float]:
+def disk_usage(path: str) -> Dict[str, Any]:
     """Get disk usage information for the partition containing the given path
 
     Args:

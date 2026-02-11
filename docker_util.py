@@ -4,7 +4,6 @@ import time
 import re
 import json
 import asyncio
-from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
 import process_util as putil
@@ -15,11 +14,12 @@ CONTAINER_ID_SHORT_LENGTH = 12  # Length of short container ID for display
 MAX_CONCURRENT_GPU_SEARCH = 10  # Maximum concurrent searches for GPU processes
 
 
-def find_docker_id_by_pid(pid: int) -> str|None:
+def find_docker_id_by_pid(pid: int) -> Optional[str]:
     """Synchronously find container ID by PID (for non-async scenarios)"""
     cp = putil.run_cmd(['docker', 'ps', '-q'])
-    if cp.get('exit_code', 1) != 0:
-        logger.error(f'failed to get container list, cannot find container for PID {pid}, exit_code: {cp.get("exit_code")}')
+    exit_code = cp.get('exit_code', 1)
+    if exit_code != 0:
+        logger.error(f'failed to get container list, PID {pid}, exit_code {exit_code}')
         return None
     docker_ids = [line.strip() for line in cp['stdout'].split('\n') if line.strip()]
     logger.debug(f'searching for PID {pid} in {len(docker_ids)} containers')
@@ -32,7 +32,7 @@ def find_docker_id_by_pid(pid: int) -> str|None:
     return None
 
 
-def inspect_docker(docker_id: str) -> dict:
+def inspect_docker(docker_id: str) -> Dict[str, Any]:
     """Synchronously get container inspect information (for non-async scenarios)
 
     Args:
@@ -48,35 +48,18 @@ def inspect_docker(docker_id: str) -> dict:
     try:
         data = json.loads(cp.get('stdout', ''))
         return data if isinstance(data, list) and len(data) > 0 else (data if isinstance(data, dict) else {})
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError as ex:
         stdout_len = len(cp.get('stdout', ''))
-        logger.error(f'failed to parse container {docker_id[:CONTAINER_ID_SHORT_LENGTH]} inspect JSON: {e!r}, stdout length: {stdout_len}')
+        logger.error(f'failed to parse container {docker_id[:CONTAINER_ID_SHORT_LENGTH]} inspect JSON: {ex!r}, stdout length: {stdout_len}')
         return {}
-    except Exception as e:
-        logger.error(f'unexpected error inspecting container {docker_id[:CONTAINER_ID_SHORT_LENGTH]}: {e!r}')
+    except Exception as ex:
+        logger.error(f'unexpected error inspecting container {docker_id[:CONTAINER_ID_SHORT_LENGTH]}: {ex!r}')
         return {}
-
-
-def describe_docker(inpsect: dict) -> str:
-    config = inpsect['Config']
-    state = inpsect['State']
-    state.pop('Health', None)
-    labels = config['Labels']
-    config_files = labels.get('com.docker.compose.project.config_files', '')
-    service = labels.get('com.docker.compose.service', '')
-    print(f'Image: {config['Image']}')
-    print(f'Service: {service}')
-    print(f'Name: {inpsect['Name']}')
-    print(f'ConfigFile: {config_files}')
-    print(f'Created: {inpsect['Created']}')
-    print(f'Path: {inpsect['Path']}')
-    print(f'Args: {inpsect['Args']}')
-    print(f'State: {json.dumps(state, indent=2, ensure_ascii=False)}')
 
 
 async def a_get_running_container_ids() -> List[str]:
     """Asynchronously get list of all running container IDs"""
-    result = await putil.a_run_cmd_monitored(['docker', 'ps', '-q'], print_cmd=False, print_output=False, print_return=False)
+    result = await putil.a_run_cmd_monitored(['docker', 'ps', '-q'])
     if result.exit_code != 0:
         logger.error(f'failed to get running container IDs, exit_code: {result.exit_code}, stderr: {result.stderr}')
         return []
@@ -87,15 +70,17 @@ async def a_get_running_container_ids() -> List[str]:
 
 async def a_inspect_docker(docker_id: str) -> Dict[str, Any]:
     """Asynchronously get inspect information for a single container (used when operating on a container individually)"""
-    result = await putil.a_run_cmd_monitored(['docker', 'inspect', docker_id], print_cmd=False, print_output=False, print_return=False)
+    result = await putil.a_run_cmd_monitored(['docker', 'inspect', docker_id])
     if result.exit_code != 0:
-        logger.error(f'failed to inspect container {docker_id[:CONTAINER_ID_SHORT_LENGTH]}, exit_code: {result.exit_code}, stderr: {result.stderr}')
+        logger.error(f'failed to inspect container {docker_id[:CONTAINER_ID_SHORT_LENGTH]}'
+                     f', exit_code: {result.exit_code}, stderr: {result.stderr}')
         return {}
     try:
         data = json.loads(result.stdout)
         return data[0] if isinstance(data, list) and len(data) > 0 else {}
-    except json.JSONDecodeError as e:
-        logger.error(f'failed to parse container {docker_id[:CONTAINER_ID_SHORT_LENGTH]} inspect JSON: {e!r}, stdout length: {len(result.stdout)}')
+    except json.JSONDecodeError as ex:
+        logger.error(f'failed to parse container {docker_id[:CONTAINER_ID_SHORT_LENGTH]} inspect JSON: {ex!r}'
+                     f', stdout length: {len(result.stdout)}')
         return {}
 
 
@@ -129,8 +114,9 @@ async def a_inspect_all_containers() -> List[Dict[str, Any]]:
         else:
             logger.warning(f'docker inspect returned data is not a list type: {type(data)}')
             return []
-    except json.JSONDecodeError as e:
-        logger.error(f'failed to parse docker inspect JSON: {e!r}, stdout length: {len(result.stdout)}, first 100 chars: {result.stdout[:100]}')
+    except json.JSONDecodeError as ex:
+        logger.error(f'failed to parse docker inspect JSON: {ex!r}, stdout length: {len(result.stdout)}'
+                     f', first 100 chars: {result.stdout[:100]}')
         return []
 
 
@@ -392,8 +378,8 @@ def parse_nvidia_smi_output(output: str) -> List[Dict[str, Any]]:
                         'process_name': process_name,
                         'memory_mib': memory_usage,
                     })
-                except (ValueError, IndexError) as e:
-                    logger.debug(f'failed to parse nvidia-smi process line: {line[:100]}, error: {e!r}')
+                except (ValueError, IndexError) as ex:
+                    logger.debug(f'failed to parse nvidia-smi process line: {line[:100]}, error: {ex!r}')
                     continue
 
     logger.debug(f'parsed {len(processes)} GPU processes from nvidia-smi output')
@@ -621,8 +607,8 @@ def parse_docker_stats_output(output: str) -> Dict[str, Dict[str, Any]]:
                 'pids': pids
             }
 
-        except (ValueError, IndexError) as e:
-            logger.warning(f'failed to parse docker stats line: {line[:100]}, error: {e!r}')
+        except (ValueError, IndexError) as ex:
+            logger.warning(f'failed to parse docker stats line: {line[:100]}, error: {ex!r}')
             continue
 
     logger.debug(f'parsed stats for {len(stats)} containers')
@@ -678,6 +664,6 @@ if __name__ == '__main__':
     if docker_id:
         print(f'Docker id: {docker_id}')
         inspect = inspect_docker(docker_id)
-        describe_docker(inspect[0])
+        print(f'Inspect: {json.dumps(inspect, indent=2, ensure_ascii=False)}')
     else:
         print('Docker id not found')

@@ -2,19 +2,12 @@ import os
 import sys
 import time
 import json
-from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from collections import defaultdict
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, StreamingResponse
-from pydantic import ValidationError
-
-try:
-    import bcrypt
-    HAS_BCRYPT = True
-except ImportError:
-    HAS_BCRYPT = False
+import bcrypt
+import httpx
 
 import models
 import fastapi_util as futil
@@ -22,12 +15,11 @@ import time_util as tutil
 import sys_util as sutil
 import docker_util as dutil
 import process_util as putil
-import httpx
 from log_util import logger, remove_color_of_shell_text
 
 
 router = APIRouter()
-_thread_executor: ThreadPoolExecutor|None = None
+# _thread_executor: ThreadPoolExecutor|None = None
 # Docker Compose command format: ['docker', 'compose'] or ['docker-compose']
 _compose_cmd: list[str]|None = None
 # Restart password cache (username -> password_hash)
@@ -40,11 +32,11 @@ GPU_CONTAINER_IDS_CACHE_TTL = 2.0  # Cache TTL in seconds
 HTTP_REQUEST_BLOCK_LOCAL_IP = False
 
 
-def get_thread_executor() -> ThreadPoolExecutor:
-    global _thread_executor
-    if _thread_executor is None:
-        _thread_executor = ThreadPoolExecutor(max_workers=1)
-    return _thread_executor
+# def get_thread_executor() -> ThreadPoolExecutor:
+#     global _thread_executor
+#     if _thread_executor is None:
+#         _thread_executor = ThreadPoolExecutor(max_workers=1)
+#     return _thread_executor
 
 
 def get_restart_password_hash(username: str = 'admin') -> str:
@@ -91,8 +83,8 @@ def get_restart_password_hash(username: str = 'admin') -> str:
         else:
             logger.warning(f'Password file does not exist: {key_file_path}')
             return ''
-    except Exception as e:
-        logger.error(f'Failed to read password file: {e!r}')
+    except Exception as ex:
+        logger.error(f'Failed to read password file: {ex!r}')
         _restart_passwords = {}
         return ''
 
@@ -107,15 +99,11 @@ def verify_password(password: str, password_hash: str) -> bool:
     Returns:
         bool: Returns True if password matches, otherwise False
     """
-    if not HAS_BCRYPT:
-        logger.error('bcrypt library not installed, cannot verify password. Please run: pip install bcrypt')
-        return False
-
     try:
         # bcrypt automatically handles salt in hash value
         return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
-    except Exception as e:
-        logger.error(f'Password verification process error: {e!r}')
+    except Exception as ex:
+        logger.error(f'Password verification process error: {ex!r}')
         return False
 
 
@@ -328,10 +316,10 @@ async def make_http_request(request: Request, req_data: models.HttpRequestModel 
         # Parse URL
         try:
             parsed_url = urlparse(url)
-        except Exception as e:
+        except Exception as ex:
             return {
                 'code': 2,
-                'message': f'Invalid URL format: {str(e)}',
+                'message': f'Invalid URL format: {ex!r}',
                 'data': None
             }
 
@@ -449,31 +437,31 @@ async def make_http_request(request: Request, req_data: models.HttpRequestModel 
                 'message': 'Request timeout (exceeded 30 seconds)',
                 'data': {'url': url, 'method': method}
             }
-        except httpx.ConnectError as e:
-            logger.warning(f'HTTP connection error: {method} {url} - {str(e)}')
+        except httpx.ConnectError as ex:
+            logger.warning(f'HTTP connection error: {method} {url} - {ex!r}')
             return {
                 'code': 7,
-                'message': f'Connection failed: {str(e)}',
+                'message': f'Connection failed: {ex!r}',
                 'data': {'url': url, 'method': method}
             }
-        except httpx.HTTPError as e:
-            logger.warning(f'HTTP error: {method} {url} - {str(e)}')
+        except httpx.HTTPError as ex:
+            logger.warning(f'HTTP error: {method} {url} - {ex!r}')
             return {
                 'code': 8,
-                'message': f'HTTP request error: {str(e)}',
+                'message': f'HTTP request error: {ex!r}',
                 'data': {'url': url, 'method': method}
             }
-        except Exception as e:
-            logger.error(f'Unexpected error in HTTP request: {method} {url} - {e!r}')
+        except Exception as ex:
+            logger.error(f'Unexpected error in HTTP request: {method} {url} - {ex!r}')
             return {
                 'code': 9,
-                'message': f'Request failed: {str(e)}',
+                'message': f'Request failed: {ex!r}',
                 'data': {'url': url, 'method': method}
             }
 
-    except Exception as e:
-        logger.error(f'HTTP request API error: {e!r}')
-        raise HTTPException(status_code=500, detail=f'HTTP request API error: {str(e)}')
+    except Exception as ex:
+        logger.error(f'HTTP request API error: {ex!r}')
+        raise HTTPException(status_code=500, detail=f'HTTP request API error: {ex!r}')
 
 
 @router.get("/api/containers/{container_id}/healthcheck", response_model=models.ResponseModel,
@@ -511,15 +499,15 @@ async def test_healthcheck(container_id: str):
                 'message': 'Healthcheck URL request timeout',
                 'data': {'url': healthcheck_url}
             }
-        except Exception as e:
+        except Exception as ex:
             return {
                 'code': 3,
-                'message': f'Failed to access Healthcheck URL: {str(e)}',
+                'message': f'Failed to access Healthcheck URL: {ex!r}',
                 'data': {'url': healthcheck_url}
             }
-    except Exception as e:
-        logger.error(f'healthcheck test failed: {e!r}')
-        raise HTTPException(status_code=500, detail=f'Healthcheck test failed: {str(e)}')
+    except Exception as ex:
+        logger.error(f'healthcheck test failed: {ex!r}')
+        raise HTTPException(status_code=500, detail=f'Healthcheck test failed: {ex!r}')
 
 
 @router.post("/api/containers/{container_name}/restart", response_model=models.ResponseModel,
@@ -538,14 +526,6 @@ async def restart_container(request: Request, container_name: str,
         username: Username (default 'admin', from request body)
     """
     logger.info(f'client={request.client.host}:{request.client.port}, container_name={container_name}, username={username}')
-
-    if not HAS_BCRYPT:
-        logger.error('bcrypt library not installed, cannot verify password')
-        return {
-            'code': 500,
-            'message': 'Server configuration error: bcrypt library not installed, please run: pip install bcrypt',
-            'data': None
-        }
 
     password_hash = get_restart_password_hash(username)
     if not password_hash:
@@ -586,9 +566,9 @@ async def restart_container(request: Request, container_name: str,
             'message': 'success',
             'data': {'container_name': container_name, 'stdout': result.stdout}
         }
-    except Exception as e:
-        logger.error(f'failed to restart container: {e!r}')
-        raise HTTPException(status_code=500, detail=f'Failed to restart container: {str(e)}')
+    except Exception as ex:
+        logger.error(f'failed to restart container: {ex!r}')
+        raise HTTPException(status_code=500, detail=f'Failed to restart container: {str(ex)}')
 
 
 @router.post("/api/containers/{container_id}/downup", response_model=models.ResponseModel,
@@ -606,15 +586,6 @@ async def downup_container(request: Request, container_id: str,
         username: Username for authentication (default: 'admin', obtained from request body)
     """
     logger.info(f'client={request.client.host}:{request.client.port}, container_id={container_id}, username={username}')
-
-    # Verify password (using bcrypt hash comparison)
-    if not HAS_BCRYPT:
-        logger.error('bcrypt library not installed, cannot verify password')
-        return {
-            'code': 500,
-            'message': 'Server configuration error: bcrypt library not installed, please run: pip install bcrypt',
-            'data': None
-        }
 
     password_hash = get_restart_password_hash(username)
     if not password_hash:
@@ -716,9 +687,9 @@ async def downup_container(request: Request, container_id: str,
                 'up_stdout': result_up.stdout
             }
         }
-    except Exception as e:
-        logger.error(f'failed to restart container: {e!r}')
-        raise HTTPException(status_code=500, detail=f'Failed to restart container: {str(e)}')
+    except Exception as ex:
+        logger.error(f'failed to restart container: {ex!r}')
+        raise HTTPException(status_code=500, detail=f'Failed to restart container: {ex!r}')
 
 
 @router.post("/api/containers/{container_id}/downup/stream", summary='Down and up docker container (SSE stream)',
@@ -737,13 +708,8 @@ async def downup_container_stream(request: Request, container_id: str,
     """
     logger.info(f'client={request.client.host}:{request.client.port}, container_id={container_id}, username={username}')
 
-    async def generate_restart_stream():
+    async def generate_downup_stream():
         try:
-            # Verify password (using bcrypt hash comparison)
-            if not HAS_BCRYPT:
-                yield f"data: {json.dumps({'type': 'error', 'data': 'Server configuration error: bcrypt library not installed, please run: pip install bcrypt'}, ensure_ascii=False)}\n\n"
-                return
-
             password_hash = get_restart_password_hash(username)
             if not password_hash:
                 yield f"data: {json.dumps({'type': 'error', 'data': f'Password verification failed: user \"{username}\" not found or password not configured'}, ensure_ascii=False)}\n\n"
@@ -853,12 +819,12 @@ async def downup_container_stream(request: Request, container_id: str,
             # Return success result
             yield f"data: {json.dumps({'type': 'success', 'data': {'compose_file': compose_file, 'down_exit_code': down_exit_code, 'up_exit_code': up_exit_code, 'down_stdout': ''.join(down_stdout), 'up_stdout': ''.join(up_stdout)}}, ensure_ascii=False)}\n\n"
 
-        except Exception as e:
-            logger.error(f'failed to restart container: {e!r}')
-            yield f"data: {json.dumps({'type': 'error', 'data': f'Failed to restart container: {str(e)}'}, ensure_ascii=False)}\n\n"
+        except Exception as ex:
+            logger.error(f'failed to restart container: {ex!r}')
+            yield f"data: {json.dumps({'type': 'error', 'data': f'Failed to restart container: {str(ex)}'}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
-        generate_restart_stream(),
+        generate_downup_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

@@ -12,7 +12,7 @@ import locale
 import threading
 import subprocess
 from enum import Enum
-from typing import (Any, AsyncGenerator, Callable, Deque, Dict, Generator, List, Iterable, Iterator, Sequence, Set, Tuple, Union, Literal)
+from typing import (Any, AsyncGenerator, Dict, Generator, List, Tuple, Union)
 
 import psutil
 from log_util import logger, log, Fore

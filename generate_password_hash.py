@@ -54,8 +54,8 @@ def verify_password(password: str, password_hash: str) -> bool:
     """
     try:
         return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
-    except Exception as e:
-        print(f'Error: Password verification failed: {e!r}')
+    except Exception as ex:
+        print(f'Error: Password verification failed: {ex!r}')
         return False
 
 
@@ -87,8 +87,8 @@ def load_users(key_file_path: str) -> dict:
                 save_users(key_file_path, users)
                 print('Migration completed: existing password is now assigned to user "admin"')
                 return users
-    except Exception as e:
-        print(f'Error: Failed to read user file: {e!r}')
+    except Exception as ex:
+        print(f'Error: Failed to read user file: {ex!r}')
         return {}
 
 
@@ -102,8 +102,8 @@ def save_users(key_file_path: str, users: dict):
     try:
         with open(key_file_path, 'w', encoding='utf-8') as f:
             json.dump(users, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f'Error: Failed to write user file: {e!r}')
+    except Exception as ex:
+        print(f'Error: Failed to write user file: {ex!r}')
         raise
 
 
@@ -217,8 +217,8 @@ Examples:
         print(f'\n✓ User "{username}" {action} successfully!')
         print(f'✓ Password hash saved to: {output_file}')
         print('\nNote: Please keep this file secure and do not commit it to version control!')
-    except Exception as e:
-        print(f'\nError: Unable to write to file {output_file}: {e}')
+    except Exception as ex:
+        print(f'\nError: Unable to write to file {output_file}: {ex!r}')
         sys.exit(1)
 
 
