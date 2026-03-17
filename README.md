@@ -22,7 +22,7 @@ A Docker container monitoring tool with a web UI. The backend is built with **Fa
 
 - Python 3.10+ (tested with Python 3.12)
 - Docker
-- Docker Compose (for restart/down-up)
+- Docker Compose (for restart/down-up): supports both `docker compose` (V2) and `docker-compose` (V1), auto-detected at runtime
 
 ## Install & Run
 
@@ -33,6 +33,7 @@ newgrp docker
 ```
 
 ```bash
+# pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 pip install fastapi fastapi-offline uvicorn[standard] httpx psutil bcrypt
 python gen_git_commit.py # generate version.py
 python docker_monitor_server.py --host 0.0.0.0 --port 9949

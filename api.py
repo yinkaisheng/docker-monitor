@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import time
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -113,6 +114,7 @@ async def get_compose_cmd() -> list[str]:
     Detection order:
     1. First try 'docker compose' (Docker Compose V2, as a docker subcommand)
     2. If failed, try 'docker-compose' (Docker Compose V1, standalone command)
+    3. If FileNotFoundError (executable not in PATH), try shutil.which and common paths
 
     Returns:
         list[str]: Compose command format, e.g. ['docker', 'compose'] or ['docker-compose']
@@ -151,9 +153,32 @@ async def get_compose_cmd() -> list[str]:
         logger.info('Detected docker-compose (V1) is available')
         return _compose_cmd
 
-    # If both are unavailable, default to 'docker compose' and log warning
-    logger.warning('Unable to detect available docker compose command, defaulting to docker compose')
-    _compose_cmd = ['docker', 'compose']
+    # When FileNotFoundError (executable not in PATH), try to find docker-compose
+    if result.exception and isinstance(result.exception, FileNotFoundError):
+        logger.info('docker-compose not in PATH, trying shutil.which and common paths...')
+        candidates: list[str] = []
+        which_path = shutil.which('docker-compose')
+        if which_path:
+            candidates.append(which_path)
+        # Common installation paths on Linux
+        for path in ('/usr/local/bin/docker-compose', '/usr/bin/docker-compose'):
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                candidates.append(path)
+        for compose_path in candidates:
+            result = await putil.a_run_cmd_monitored(
+                [compose_path, 'version'],
+                print_cmd=False,
+                print_output=False,
+                print_return=False
+            )
+            if result.exit_code == 0:
+                _compose_cmd = [compose_path]
+                logger.info(f'Detected docker-compose (V1) at {compose_path}')
+                return _compose_cmd
+
+    # If both are unavailable, default to 'docker-compose' (V1 more common on older systems)
+    logger.warning('Unable to detect available docker compose command, defaulting to docker-compose')
+    _compose_cmd = ['docker-compose']
     return _compose_cmd
 
 
