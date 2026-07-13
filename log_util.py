@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# author: yinkaisheng@foxmail.com
 import os
 import sys
 import time
@@ -8,9 +7,8 @@ import io
 import inspect
 import threading
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
-IsWindows = sys.platform == 'win32'
 IsPy38OrHigher = sys.version_info >= (3, 8)
 
 if IsPy38OrHigher:
@@ -130,7 +128,7 @@ try:
 
     from loguru import logger
 
-    def config_logger(logger, log_level = 'info', log_dir = 'logs', log_file = 'app.log',
+    def config_logger(logger, log_level = 'info', log_dir = '', log_file = '',
                       backup_count = 15, log_to_stdout = True):
         def add_thread_native_id(record):
             record['extra']['thread'] = threading.get_native_id
@@ -159,13 +157,14 @@ try:
         }
         '''
         file_format = '{time:YYYY-MM-DD HH:mm:ss.SSS} {level} T{thread} L{line} {function}: {message}'
-        if log_to_stdout:
+        if log_to_stdout and sys.stdout:
             console_format = ('<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> <lvl>{level}</lvl> '
                 '{file},{line} <light-blue>T{thread}</light-blue> <light-cyan>{function}</light-cyan>'
                 ': <lvl>{message}</lvl>')
             _stdout_logger_id = logger.add(sys.stdout, level=log_level, colorize=True, format=console_format)
-        logger.add(f'{log_dir}/{log_file}', level=log_level, enqueue=True, rotation=f'00:00:00',
-                   retention=backup_count, compression='zip', format=file_format)
+        if log_dir and log_file:
+            logger.add(f'{log_dir}/{log_file}', level=log_level, enqueue=True, rotation=f'00:00:00',
+                    retention=backup_count, compression='zip', format=file_format)
 
 except ImportError:
 
@@ -214,7 +213,7 @@ except ImportError:
                 print(f"can not find: {old_log_path}")
 
 
-    def config_logger(logger: logging.Logger, log_level = 'info', log_dir = 'logs', log_file = 'app.log',
+    def config_logger(logger: logging.Logger, log_level = 'info', log_dir = '', log_file = '',
                       backup_count = 15, log_to_stdout = True):
         if log_dir and log_dir != '.':
             os.makedirs(log_dir, exist_ok=True)
@@ -222,6 +221,8 @@ except ImportError:
         logging.Formatter.default_msec_format = '%s.%03d'
         file_formatter = LogFormatter('%(asctime)s %(levelname)s T%(thread)d L%(lineno)d %(funcName)s: %(message)s')
         logger.setLevel(log_level)
+        if not (log_dir and log_file):
+            return
         file_handler = ZipTimedRotatingFileHandler(
             f'{log_dir}/{log_file}',
             when="midnight",    # midnight
@@ -233,7 +234,8 @@ except ImportError:
             pass
         else:
             for handler in logger.handlers[:]:
-                logger.removeHandler(handler)
+                if getattr(handler, 'stream', None) in (sys.stdout, sys.stderr):
+                    logger.removeHandler(handler)
         logger.addHandler(file_handler)
 
 
@@ -277,6 +279,7 @@ def remove_color_of_shell_text(stdout: str) -> str:
 
 
 def printx(*values, prefix: Any = '', print_id: bool = False, sep: str = ' ', end: str = None, caller: bool = True, flush: bool = False) -> None:
+    '''values must be variables that have name, like: name = value, not literal or expression like: 1 + 2, etc.'''
     now = datetime.now()
     if caller:
         frame = sys._getframe(1)
@@ -323,7 +326,7 @@ def printx(*values, prefix: Any = '', print_id: bool = False, sep: str = ' ', en
     print(timestr, "\n  ".join(output_parts), sep=sep, end=end, flush=flush)
 
 
-def log(msg: Any = '', sep: str = ' ', end: str = None, caller: bool = True, flush: bool = False, file: io.FileIO = None) -> None:
+def log(msg: Any = '', sep: str = ' ', end: Optional[str] = None, caller: bool = True, flush: bool = False, file: Optional[io.FileIO] = None) -> None:
     '''console log'''
     now = datetime.now()
     if caller:
@@ -341,6 +344,15 @@ def log(msg: Any = '', sep: str = ' ', end: str = None, caller: bool = True, flu
     print(timestr, msg, sep=sep, end=end, flush=flush, file=file)
 
 
+def set_console_title(title: str) -> None:
+    try:
+        if sys.stdout and os.isatty(sys.stdout.fileno()):
+            sys.stdout.write(f'\x1b]2;{title}\x07')
+            sys.stdout.flush()
+    except Exception:
+        pass  # not running in a terminal (e.g. systemd service)
+
+
 if __name__ == '__main__':
     def log_test():
         logger.info('hello world')
@@ -348,6 +360,6 @@ if __name__ == '__main__':
         logger.error('hello world')
         logger.critical('hello world')
 
-    config_logger(logger, log_to_stdout=True)
-    logger.debug('hello world')
+    config_logger(logger, log_to_stdout=True, log_dir='logs', log_file='test.log')
+    logger.info('hello world')
     log_test()

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# author: yinkaisheng@foxmail.com
 import os
 import sys
 import time
 import shlex
+import ctypes
 import shutil
 import locale
 import functools
 import traceback
 import subprocess
 from datetime import datetime, timedelta
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import psutil
 
@@ -76,6 +76,35 @@ def async_catch_exception(exception_return=None):
     return decorator
 
 
+def get_python_modules(only_site_packages:bool = False, sort: str = None, reverse: bool = False) -> Dict[int, List[Dict]]:
+    modules = []
+    for name, module in sys.modules.items():
+        module_path = ''
+        module_file = getattr(module, '__file__', None)
+        if module_file:
+            module_path = os.path.abspath(module_file)
+        if only_site_packages:
+            if module_path:
+                if 'site-packages' not in module_file:
+                    continue
+            else:
+                continue
+            modules.append({
+                'name': name,
+                'file': module_path,
+                'package': getattr(module, '__package__', '')
+            })
+        else:
+            modules.append({
+                'name': name,
+                'file': module_path,
+                'package': getattr(module, '__package__', '')
+            })
+    if sort:
+        modules.sort(key=lambda x: x[sort], reverse=reverse)
+    return {os.getpid(): modules}
+
+
 def get_default_encoding():
     if sys.version_info >= (3, 11):
         encoding = locale.getencoding()
@@ -84,8 +113,61 @@ def get_default_encoding():
     return encoding
 
 
+def is_current_user_admin() -> bool:
+    if sys.platform == 'win32':
+        if os.sys.getwindowsversion().major >= 6:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        else:
+            return True
+    else:
+        return os.geteuid() == 0
+
+
+def delete_old_files(directory: str, total_size_gb: float, keep_days: int = 7):
+    '''
+    delete old files modified before keep_days days ago, if keep_days is 0, only delete files by total size constraint.
+    delete old files in directory until total size is less than total_size_mb by modify time.
+    '''
+    files_info: list[tuple[os.DirEntry, os.stat_result]] = []
+    with os.scandir(directory) as it:
+        for entry in it:
+            if entry.is_file():
+                files_info.append((entry, entry.stat()))
+    files_info.sort(key=lambda x: x[1].st_mtime, reverse=True)
+    max_bytes = int(total_size_gb * 1024 * 1024 * 1024)
+    total_size = 0
+    delete_count = 0
+    failed_names = []
+    now = time.time()
+    for file_info in files_info:
+        # print(f'file_info: {file_info[0].path} {file_info[1].st_size} {file_info[1].st_mtime}')
+        delete = False
+        if keep_days > 0 and now - file_info[1].st_mtime > keep_days * 24 * 3600:
+            delete = True
+            delete_count += 1
+            context = 'delete old file by keep_days'
+        if not delete:
+            total_size += file_info[1].st_size
+            if total_size > max_bytes:
+                delete = True
+                delete_count += 1
+                total_size -= file_info[1].st_size
+                context = 'delete old file by total size'
+        if delete:
+            try:
+                os.remove(file_info[0].path)
+                logger.info(f'{context}: {file_info[0].path}')
+            except Exception as ex:
+                failed_names.append(file_info[0].name)
+                logger.error(f'{context}: {file_info[0].path} failed, ex={ex!r}')
+    if delete_count > 0:
+        logger.info(f'deleted {delete_count} old files, total size is {total_size} bytes'
+            f', failed {len(failed_names)} files: {failed_names}')
+
+
 def delete_old_directory(directory: str, keep_days: int, subdirectory_name_format: str = '%Y%m%d'):
-    """Delete subdirectories older than specified days
+    """
+    Delete subdirectories older than specified days
 
     Scans a directory for subdirectories with numeric names matching the date format,
     and deletes those created before the specified number of days ago.
@@ -241,9 +323,10 @@ def enum_process(search: str = None, where: str = 'all', terminate: bool = False
                     if not search in text:
                         # print(f'{search} not in {text}')
                         continue
-            print(f'pid={Fore.Cyan}{p.pid}{Fore.Reset}, ppid={p.ppid()}, name={Fore.Cyan}{name}{Fore.Reset}, \n\texe={Fore.DarkCyan}{exe}{Fore.Reset}'
-                f', \n\tcwd={cwd}, \n\tcmd={cmdline}'
-                f', \n\t{", ".join(f"{k}={v}" for k,v in mem_values.items())}')
+            print(f'pid={Fore.Cyan}{p.pid}{Fore.Reset}, ppid={p.ppid()}, name={Fore.Cyan}{name}{Fore.Reset}'
+                  f', \n\texe={Fore.DarkCyan}{exe}{Fore.Reset}'
+                  f', \n\tcwd={cwd}, \n\tcmd={cmdline}'
+                  f', \n\t{", ".join(f"{k}={v}" for k,v in mem_values.items())}')
             if terminate:
                 print(f'try to terminate pid {Fore.Cyan}{p.pid}{Fore.Reset}')
                 p.terminate()
