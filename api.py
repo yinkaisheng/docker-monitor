@@ -252,6 +252,7 @@ async def get_gpu_usage():
     use_gpu_container_ids = None
     current_time = time.perf_counter()
     if (_gpu_container_ids_cache is not None and
+        _gpu_container_ids_cache and
         (current_time - _gpu_container_ids_cache_time) <= GPU_CONTAINER_IDS_CACHE_TTL):
         use_gpu_container_ids = _gpu_container_ids_cache
         logger.debug(f'using cached GPU container IDs ({len(use_gpu_container_ids)} containers) for optimization')

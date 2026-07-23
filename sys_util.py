@@ -504,6 +504,29 @@ def uninstall_timed_service(service_name: str):
         os.system(cmd)
 
 
+def _build_accelerator_smi_shell_snippet() -> str:
+    """Build shell snippet to dump GPU/NPU status before docker compose restart."""
+    from docker_util import _resolve_executable, detect_accelerator_vendor
+
+    vendor = detect_accelerator_vendor()
+    if vendor == 'nvidia':
+        nvidia_smi = _resolve_executable('nvidia-smi') or 'nvidia-smi'
+        return f'''echo "call nvidia-smi"
+{nvidia_smi}'''
+    if vendor == 'ascend':
+        npu_smi = _resolve_executable('npu-smi') or 'npu-smi'
+        return f'''echo "call npu-smi info"
+{npu_smi} info'''
+    return '''echo "call accelerator status"
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi
+elif command -v npu-smi >/dev/null 2>&1; then
+  npu-smi info
+else
+  echo "no nvidia-smi or npu-smi found"
+fi'''
+
+
 def install_restart_docker_service(service_name: str, docker_compose_file: str, at_hour: int = 4, at_minute: int = 0):
     '''only for Linux'''
     ret = os.system('docker compose version')
@@ -511,6 +534,7 @@ def install_restart_docker_service(service_name: str, docker_compose_file: str, 
         docker_compose_cmd = 'docker compose'
     else:
         docker_compose_cmd = 'docker-compose'
+    accelerator_smi_snippet = _build_accelerator_smi_shell_snippet()
     sh_content = f'''#!/bin/bash
 CUR_DIR="$(pwd)"
 SCRIPT_DIR="$(dirname "$0")"
@@ -531,8 +555,7 @@ echo "call env"
 env
 echo ""
 
-echo "call nvidia-smi"
-nvidia-smi
+{accelerator_smi_snippet}
 echo ""
 
 echo "$(date '+%Y-%m-%d %H:%M:%S') call {docker_compose_cmd} down"
