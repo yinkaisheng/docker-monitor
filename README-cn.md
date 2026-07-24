@@ -91,11 +91,13 @@
 8. **获取 GPU/NPU 使用信息接口** (`GET /api/gpu/usage`)
    - 自动检测 NVIDIA（`nvidia-smi`）或华为 Ascend（`npu-smi info`）
    - 返回各容器的加速器进程、显存占用及设备序号
-   - 与容器列表接口配合，前端异步加载显存信息
 
 9. **获取容器资源统计接口** (`GET /api/containers/stats`)
    - 调用 `docker stats --no-stream` 获取 CPU、内存、网络、磁盘 I/O
-   - 前端异步加载，显示容器内存占用（如 `10.11 / 64GB`）和 CPU 使用率
+
+10. **容器聚合概览接口** (`GET /api/containers/overview`)
+   - 一次返回容器列表、GPU/NPU 显存、CPU/内存统计
+   - 前端**首次加载**仍分步请求以快速显示列表；**自动刷新及之后的手动刷新**使用本接口
 
 > 容器字段（GPU 序号、显存、内存等）的采集实现细节见 [docs/implementation.md](docs/implementation.md)。
 
@@ -190,6 +192,27 @@ python generate_password_hash.py --password "你的密码"
 - 健康检查: http://localhost:9949/health
 
 ## API接口说明
+
+### 0. 容器聚合概览（推荐）
+
+**请求**
+```
+GET /api/containers/overview
+GET /api/containers/overview?debug=true
+```
+
+**响应**
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "containers": [ /* 同 /api/containers 的 data 数组 */ ],
+    "gpu_usage": { /* 同 /api/gpu/usage 的 data 对象 */ },
+    "stats": { /* 同 /api/containers/stats 的 data 对象 */ }
+  }
+}
+```
 
 ### 1. 获取容器列表
 

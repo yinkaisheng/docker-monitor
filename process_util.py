@@ -12,12 +12,24 @@ import locale
 import threading
 import subprocess
 from enum import Enum
-from typing import (Any, AsyncGenerator, Dict, Generator, List, Tuple, Union)
+from typing import (Any, AsyncGenerator, Dict, Generator, List, Optional, Tuple, Union)
 
 import psutil
 from log_util import logger, log, Fore
 
 monotonic_time = time.perf_counter
+
+
+def _prepare_subprocess_env(env: Dict[str, str] = None) -> Optional[Dict[str, str]]:
+    """Build subprocess env on Unix: inherit os.environ and set PYTHONUNBUFFERED."""
+    if sys.platform == 'win32':
+        return env
+    if env is None:
+        env = os.environ.copy()
+    else:
+        env = dict(env)
+    env.setdefault('PYTHONUNBUFFERED', '1')
+    return env
 
 if sys.platform == 'win32':
     Mem1Name = 'wset'
@@ -354,7 +366,7 @@ def run_cmd_iter(cmd: Union[str, List[str]], text: bool = True, encoding: str = 
         encoding: Text encoding (defaults to system locale encoding)
         shell: If True, run command through shell
         cwd: Working directory for the command
-        env: Environment variables dictionary (PYTHONUNBUFFERED=1 is added on non-Windows)
+        env: Environment variables dictionary (on Unix, defaults to os.environ copy with PYTHONUNBUFFERED=1)
         print_cmd: If True, print the command before execution
         print_return: If True, print exit code when process completes
         timeout_interval: Interval in seconds to check for output (yields 'timeout' if no output)
@@ -412,11 +424,7 @@ def run_cmd_iter(cmd: Union[str, List[str]], text: bool = True, encoding: str = 
             encoding = locale.getencoding()
         else:
             encoding = locale.getpreferredencoding(False)
-    if sys.platform != 'win32':
-        if env is None:
-            env = {'PYTHONUNBUFFERED': '1'}
-        elif 'PYTHONUNBUFFERED' not in env:
-            env['PYTHONUNBUFFERED'] = '1'
+    env = _prepare_subprocess_env(env)
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=text, encoding=encoding, shell=shell, cwd=cwd, env=env,
@@ -610,7 +618,7 @@ async def a_run_cmd_iter(cmd: Union[str, List[str]], text: bool = True, encoding
         text: If True, decode output as text; if False, return bytes
         encoding: Text encoding for decoding (defaults to system locale encoding)
         cwd: Working directory for the command
-        env: Environment variables dictionary (PYTHONUNBUFFERED=1 is added on non-Windows)
+        env: Environment variables dictionary (on Unix, defaults to os.environ copy with PYTHONUNBUFFERED=1)
         print_cmd: If True, print the command before execution
         print_return: If True, print exit code when process completes
         timeout_interval: Interval in seconds to check for output (yields 'timeout' if no output)
@@ -667,11 +675,7 @@ async def a_run_cmd_iter(cmd: Union[str, List[str]], text: bool = True, encoding
                     await que.put((stdtype, buffer)) # output partial buffer if no ascii character
                     buffer = bytearray()
 
-    if sys.platform != 'win32':
-        if env is None:
-            env = {'PYTHONUNBUFFERED': '1'}
-        elif 'PYTHONUNBUFFERED' not in env:
-            env['PYTHONUNBUFFERED'] = '1'
+    env = _prepare_subprocess_env(env)
 
     try:
         if isinstance(cmd, list):

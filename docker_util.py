@@ -22,6 +22,13 @@ _container_pid_sets_cache: Dict[str, set] = {}
 _container_pid_sets_cache_key: Optional[Tuple[str, ...]] = None
 _container_pid_sets_cache_time: float = 0
 CONTAINER_PID_SETS_CACHE_TTL = 2.0  # Reuse docker top PID sets within this window
+DOCKER_METADATA_CACHE_TTL = 2.0  # Share docker ps / inspect across concurrent API calls
+_running_container_ids_cache: Optional[List[str]] = None
+_running_container_ids_cache_time: float = 0
+_inspect_all_cache_data: Optional[List[Dict[str, Any]]] = None
+_inspect_all_cache_key: Optional[Tuple[str, ...]] = None
+_inspect_all_cache_time: float = 0
+_docker_metadata_lock: Optional[asyncio.Lock] = None
 ACCELERATOR_SMI_SEARCH_DIRS = (
     '/usr/local/sbin',
     '/usr/local/bin',
@@ -443,8 +450,8 @@ def inspect_docker(docker_id: str) -> Dict[str, Any]:
         return {}
 
 
-async def a_get_running_container_ids() -> List[str]:
-    """Asynchronously get list of all running container IDs"""
+async def _fetch_running_container_ids() -> List[str]:
+    """Run docker ps -q without caching."""
     result = await putil.a_run_cmd_monitored(['docker', 'ps', '-q'])
     if result.exit_code != 0:
         logger.error(f'failed to get running container IDs, exit_code: {result.exit_code}, stderr: {result.stderr}')
@@ -452,6 +459,50 @@ async def a_get_running_container_ids() -> List[str]:
     ids = [line.strip() for line in result.stdout.strip().split('\n') if line.strip()]
     logger.debug(f'got running container ids: {len(ids)}{ids}')
     return ids
+
+
+def _get_docker_metadata_lock() -> asyncio.Lock:
+    global _docker_metadata_lock
+    if _docker_metadata_lock is None:
+        _docker_metadata_lock = asyncio.Lock()
+    return _docker_metadata_lock
+
+
+def _invalidate_inspect_cache_if_container_set_changed(container_ids: List[str]) -> None:
+    global _inspect_all_cache_data, _inspect_all_cache_key, _inspect_all_cache_time
+    cache_key = tuple(sorted(container_ids))
+    if _inspect_all_cache_key != cache_key:
+        _inspect_all_cache_data = None
+        _inspect_all_cache_key = None
+        _inspect_all_cache_time = 0
+
+
+async def a_get_running_container_ids() -> List[str]:
+    """Asynchronously get list of all running container IDs (cached, single-flight)."""
+    global _running_container_ids_cache, _running_container_ids_cache_time
+
+    now = time.perf_counter()
+    if (
+        _running_container_ids_cache is not None
+        and (now - _running_container_ids_cache_time) <= DOCKER_METADATA_CACHE_TTL
+    ):
+        logger.debug(f'reusing cached running container ids ({len(_running_container_ids_cache)})')
+        return _running_container_ids_cache
+
+    async with _get_docker_metadata_lock():
+        now = time.perf_counter()
+        if (
+            _running_container_ids_cache is not None
+            and (now - _running_container_ids_cache_time) <= DOCKER_METADATA_CACHE_TTL
+        ):
+            logger.debug(f'reusing cached running container ids ({len(_running_container_ids_cache)})')
+            return _running_container_ids_cache
+
+        ids = await _fetch_running_container_ids()
+        _running_container_ids_cache = ids
+        _running_container_ids_cache_time = time.perf_counter()
+        _invalidate_inspect_cache_if_container_set_changed(ids)
+        return ids
 
 
 async def a_inspect_docker(docker_id: str) -> Dict[str, Any]:
@@ -471,39 +522,65 @@ async def a_inspect_docker(docker_id: str) -> Dict[str, Any]:
 
 
 async def a_inspect_all_containers() -> List[Dict[str, Any]]:
-    """Asynchronously get inspect information for all running containers at once (optimization: only one call needed)"""
-    # First get all running container IDs
+    """Asynchronously get inspect information for all running containers at once (cached)."""
+    global _inspect_all_cache_data, _inspect_all_cache_key, _inspect_all_cache_time
+
     container_ids = await a_get_running_container_ids()
     if not container_ids:
         logger.debug('no running containers')
         return []
 
-    # Call docker inspect once to get all container information
-    # Build command: docker inspect id1 id2 id3 ...
-    cmd = ['docker', 'inspect'] + container_ids
-    logger.debug(f'executing command to get inspect info for {len(container_ids)} containers')
-    result = await putil.a_run_cmd_monitored(
-        cmd,
-        print_cmd=False,
-        print_output=False,
-        print_return=False
-    )
-    if result.exit_code != 0:
-        logger.error(f'docker inspect command failed, exit_code: {result.exit_code}, stderr: {result.stderr}')
-        return []
+    cache_key = tuple(sorted(container_ids))
+    now = time.perf_counter()
+    if (
+        _inspect_all_cache_data is not None
+        and _inspect_all_cache_key == cache_key
+        and (now - _inspect_all_cache_time) <= DOCKER_METADATA_CACHE_TTL
+    ):
+        logger.debug(f'reusing cached inspect data for {len(_inspect_all_cache_data)} containers')
+        return _inspect_all_cache_data
 
-    try:
-        data = json.loads(result.stdout)
-        if isinstance(data, list):
-            logger.debug(f'successfully parsed inspect info for {len(data)} containers')
-            return data
-        else:
+    async with _get_docker_metadata_lock():
+        now = time.perf_counter()
+        if (
+            _inspect_all_cache_data is not None
+            and _inspect_all_cache_key == cache_key
+            and (now - _inspect_all_cache_time) <= DOCKER_METADATA_CACHE_TTL
+        ):
+            logger.debug(f'reusing cached inspect data for {len(_inspect_all_cache_data)} containers')
+            return _inspect_all_cache_data
+
+        container_ids = _running_container_ids_cache or await _fetch_running_container_ids()
+        if not container_ids:
+            return []
+
+        cache_key = tuple(sorted(container_ids))
+        cmd = ['docker', 'inspect'] + container_ids
+        logger.debug(f'executing command to get inspect info for {len(container_ids)} containers')
+        result = await putil.a_run_cmd_monitored(
+            cmd,
+            print_cmd=False,
+            print_output=False,
+            print_return=False
+        )
+        if result.exit_code != 0:
+            logger.error(f'docker inspect command failed, exit_code: {result.exit_code}, stderr: {result.stderr}')
+            return []
+
+        try:
+            data = json.loads(result.stdout)
+            if isinstance(data, list):
+                logger.debug(f'successfully parsed inspect info for {len(data)} containers')
+                _inspect_all_cache_data = data
+                _inspect_all_cache_key = cache_key
+                _inspect_all_cache_time = time.perf_counter()
+                return data
             logger.warning(f'docker inspect returned data is not a list type: {type(data)}')
             return []
-    except json.JSONDecodeError as ex:
-        logger.error(f'failed to parse docker inspect JSON: {ex!r}, stdout length: {len(result.stdout)}'
-                     f', first 100 chars: {result.stdout[:100]}')
-        return []
+        except json.JSONDecodeError as ex:
+            logger.error(f'failed to parse docker inspect JSON: {ex!r}, stdout length: {len(result.stdout)}'
+                         f', first 100 chars: {result.stdout[:100]}')
+            return []
 
 
 def extract_container_info(inspect_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -602,6 +679,20 @@ async def a_get_container_list() -> List[Dict[str, Any]]:
             if container_info:
                 containers.append(container_info)
     return containers
+
+
+async def a_get_containers_overview() -> Dict[str, Any]:
+    """Fetch containers, GPU/NPU usage, and stats in parallel (shared docker metadata cache)."""
+    containers, gpu_usage, stats = await asyncio.gather(
+        a_get_container_list(),
+        a_get_gpu_usage_by_containers(),
+        a_get_container_stats(),
+    )
+    return {
+        'containers': containers,
+        'gpu_usage': gpu_usage,
+        'stats': stats,
+    }
 
 
 async def a_get_container_healthcheck_url(container_id: str) -> Optional[str]:
@@ -828,17 +919,13 @@ def parse_npu_smi_output(output: str) -> List[Dict[str, Any]]:
     return processes
 
 
-async def a_get_gpu_usage_by_containers(use_gpu_container_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+async def a_get_gpu_usage_by_containers() -> Dict[str, Dict[str, Any]]:
     """Get GPU/NPU usage information and associate with container IDs
 
     Queries nvidia-smi or npu-smi to get accelerator processes, then maps each process
     PID to a container. Per-container memory is the sum of smi-reported memory for PIDs
     owned by that container. This PID-based attribution is required when multiple
     containers share the same GPU/NPU device.
-
-    Args:
-        use_gpu_container_ids: Reserved for API compatibility; PID mapping always searches
-                              all running containers for correctness.
 
     Returns:
         Dictionary mapping container IDs to GPU usage information:

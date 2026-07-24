@@ -8,14 +8,21 @@
 
 ## 1. 总体流程
 
-页面刷新时分三阶段异步加载，避免等待最慢的 GPU 查询阻塞列表展示：
+页面刷新时优先使用聚合接口，一次返回列表、显存与 CPU/内存：
 
 ```
-阶段 1  GET /api/containers          → 容器基础信息（含 GpuDevices）
-阶段 2  GET /api/gpu/usage           → 加速器显存（GPU/NPU）
-        GET /api/containers/stats    → 容器 CPU / 内存
-阶段 3  前端 merge                   → 更新表格各列
+GET /api/containers/overview   → containers + gpu_usage + stats（自动刷新 / 二次刷新默认）
 ```
+
+**首次打开页面**仍分步请求，先展示容器列表，再异步加载 GPU / stats：
+
+```
+GET /api/containers          → 先渲染表格
+GET /api/gpu/usage           → 填充显存列
+GET /api/containers/stats    → 填充 CPU / 内存列
+```
+
+后端 `a_get_containers_overview()` 内用 `asyncio.gather` 并行采集三项，并复用 §2.2 的 docker 元数据缓存。
 
 ```mermaid
 sequenceDiagram
@@ -23,26 +30,27 @@ sequenceDiagram
     participant API as api.py
     participant DU as docker_util.py
 
-    UI->>API: GET /api/containers
-    API->>DU: a_get_container_list()
-    DU->>DU: docker inspect (批量)
-    DU->>DU: extract_container_info()
-    API-->>UI: GpuDevices, Name, Image, ...
-
-    par 并行
-        UI->>API: GET /api/gpu/usage
-        API->>DU: a_get_gpu_usage_by_containers()
-        DU->>DU: nvidia-smi / npu-smi info
-        DU->>DU: PID 关联容器 + 按容器汇总显存
-        API-->>UI: total_memory_mib, gpu_processes
-    and
-        UI->>API: GET /api/containers/stats
-        API->>DU: a_get_container_stats()
-        DU->>DU: docker stats --no-stream
-        API-->>UI: mem_usage_bytes, cpu_percent
+    alt 首次加载
+        UI->>API: GET /api/containers
+        API->>DU: a_get_container_list()
+        API-->>UI: 渲染表格
+        par 并行
+            UI->>API: GET /api/gpu/usage
+        and
+            UI->>API: GET /api/containers/stats
+        end
+    else 后续刷新
+        UI->>API: GET /api/containers/overview
+        par 并行
+            API->>DU: a_get_container_list()
+        and
+            API->>DU: a_get_gpu_usage_by_containers()
+        and
+            API->>DU: a_get_container_stats()
+        end
+        API-->>UI: containers, gpu_usage, stats
     end
-
-    UI->>UI: updateContainersWithGpu() + updateContainersWithStats()
+    UI->>UI: merge GPU / stats 到表格
 ```
 
 | 页面列 | API 字段 | 数据来源 |
@@ -65,7 +73,18 @@ docker inspect <id1> <id2> ...        # 一次性批量 inspect
 
 实现函数：`a_inspect_all_containers()` → `extract_container_info()`
 
-### 2.2 主要字段提取
+### 2.2 Docker 元数据缓存（2 秒 TTL）
+
+聚合接口 `/api/containers/overview` 内三项并行采集；分拆接口仍可单独调用。`docker_util.py` 用 **single-flight + 短 TTL** 共享：
+
+| 数据 | 函数 | 效果 |
+|------|------|------|
+| 运行中容器 ID | `a_get_running_container_ids()` | 并发时只执行 **1 次** `docker ps -q` |
+| inspect 原始 JSON | `a_inspect_all_containers()` | 2 秒内复用，避免重复 `docker inspect` |
+
+容器增删时 inspect 缓存按 ID 集合自动失效。
+
+### 2.3 主要字段提取
 
 | 返回字段 | inspect 路径 | 说明 |
 |----------|--------------|------|
@@ -279,6 +298,11 @@ A、B 都挂载了 GPU 0，但 **`GpuDevices` 不参与显存计算**；各自�
 
 ### 4.6 性能与缓存
 
+**Docker 元数据缓存**（2 秒 TTL，见 §2.2）：
+
+- `docker ps -q`：三个 API 并发刷新时合并为一次
+- `docker inspect`：仅 `/api/containers` 需要，2 秒内重复请求直接复用
+
 **PID → 容器缓存**（进程级，跨请求保留）：
 
 - 命中条件：`/proc/<pid>` 仍存在，且映射的容器仍在运行
@@ -291,7 +315,7 @@ A、B 都挂载了 GPU 0，但 **`GpuDevices` 不参与显存计算**；各自�
 - 当仍有 PID 需要 docker top 回退时，复用近期对各容器执行的 `docker top -o pid` 快照
 - 容器列表变化（增删）时自动失效
 
-`GET /api/containers` 的 GpuDevices 缓存仅用于前端「显卡序号」，不参与显存分摊。
+**API 日志**：默认 `info` 只记条数摘要；完整 JSON 在 `debug` 级别。排查时在请求 URL 加 **`?debug=true`**（如 `GET /api/gpu/usage?debug=true`）即可在 `info` 打出完整响应，无需改服务端日志配置。
 
 ### 4.7 API 返回结构
 
@@ -355,20 +379,20 @@ cpuDisplay      = "15.80%"
 
 ## 6. 前端组装（`static/app.js`）
 
-### 6.1 刷新顺序
+页面刷新时采用两阶段策略：
+
+1. **首次加载**（`initialLoadDone === false`）：先 `GET /api/containers` 尽快渲染表格，再并行请求 GPU / stats  
+2. **后续刷新**（自动或手动）：`GET /api/containers/overview` 一次返回全部数据
 
 ```javascript
-// 1. 容器列表
-fetch('/api/containers')  → processContainers()  → 渲染表格（显存列暂为 "-"）
-
-// 2. 并行
-fetch('/api/gpu/usage')           → gpuUsage = data
-fetch('/api/containers/stats')    → containerStats = data
-
-// 3. 合并
-updateContainersWithGpu()    // 填充 gpuMemoryDisplay
-updateContainersWithStats()  // 填充 memUsageDisplay, cpuDisplay
+refreshContainers(silent)
+  ├─ 首次 → refreshContainersInitial()
+  │         fetch('/api/containers') → 渲染表格 → 并行 gpu + stats
+  └─ 之后 → refreshContainersOverview()
+            fetch('/api/containers/overview') → 一次性 merge
 ```
+
+分拆接口 `/api/containers`、`/api/gpu/usage`、`/api/containers/stats` 仍可用于脚本或调试。
 
 ### 6.2 容器 ID 匹配
 

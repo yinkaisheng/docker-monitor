@@ -64,6 +64,8 @@ function dockerMonitor() {
         toastMessage: '',
         toastType: 'success', // 'success' | 'error'
         toastTimeoutId: null,
+        /** First page load uses staged requests; later refreshes use overview API */
+        initialLoadDone: false,
 
         /**
          * Initialize component
@@ -253,6 +255,18 @@ function dockerMonitor() {
          * @param {boolean} silent - If true, don't show loading indicator
          */
         async refreshContainers(silent = false) {
+            if (!this.initialLoadDone) {
+                await this.refreshContainersInitial(silent);
+            } else {
+                await this.refreshContainersOverview(silent);
+            }
+        },
+
+        /**
+         * First load: fetch container list first, then GPU/stats in parallel (faster table paint).
+         * @param {boolean} silent
+         */
+        async refreshContainersInitial(silent = false) {
             const startTime = performance.now();
 
             if (!silent) {
@@ -261,77 +275,137 @@ function dockerMonitor() {
             }
 
             try {
-                // Fetch container list
                 const containersStartTime = performance.now();
                 const containersResponse = await fetch('/api/containers');
                 const containersResult = await containersResponse.json();
                 const containersTime = performance.now() - containersStartTime;
 
-                if (containersResult.code === 0) {
-                    // Process containers
-                    this.containers = this.processContainers(containersResult.data);
-
-                    if (!silent) {
-                        this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Containers: ${containersTime.toFixed(0)}ms, GPU loading...)`;
-                    }
-
-                    // Fetch GPU usage and container stats asynchronously
-                    const gpuStartTime = performance.now();
-                    const statsStartTime = performance.now();
-
-                    // Fetch GPU usage
-                    fetch('/api/gpu/usage')
-                        .then(response => response.json())
-                        .then(gpuResult => {
-                            const gpuTime = performance.now() - gpuStartTime;
-
-                            if (gpuResult.code === 0) {
-                                this.gpuUsage = gpuResult.data || {};
-                                console.log(`[GPU] Loaded GPU usage data for ${Object.keys(this.gpuUsage).length} containers`);
-
-                                // Force Alpine to detect the change by creating a new array
-                                this.containers = this.updateContainersWithGpu();
-                            } else {
-                                if (!silent) {
-                                    console.warn('GPU info failed:', gpuResult.message);
-                                }
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Failed to fetch GPU usage:', error);
-                        });
-
-                    // Fetch container stats
-                    fetch('/api/containers/stats')
-                        .then(response => response.json())
-                        .then(statsResult => {
-                            const statsTime = performance.now() - statsStartTime;
-
-                            if (statsResult.code === 0) {
-                                this.containerStats = statsResult.data || {};
-                                console.log(`[Stats] Loaded container stats for ${Object.keys(this.containerStats).length} containers`);
-
-                                // Force Alpine to detect the change by creating a new array
-                                this.containers = this.updateContainersWithStats();
-
-                                const totalTime = performance.now() - startTime;
-                                const gpuTime = performance.now() - gpuStartTime;
-                                this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Total: ${totalTime.toFixed(0)}ms, GPU: ${gpuTime.toFixed(0)}ms, Stats: ${statsTime.toFixed(0)}ms)`;
-                            } else {
-                                if (!silent) {
-                                    console.warn('Container stats failed:', statsResult.message);
-                                    this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Stats info failed)`;
-                                }
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Failed to fetch container stats:', error);
-                            if (!silent) {
-                                this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Stats info error)`;
-                            }
-                        });
-                } else {
+                if (containersResult.code !== 0) {
                     this.statusText = `Error: ${containersResult.message}`;
+                    return;
+                }
+
+                this.containers = this.processContainers(containersResult.data);
+                this.initialLoadDone = true;
+
+                if (!silent) {
+                    this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Containers: ${containersTime.toFixed(0)}ms, GPU loading...)`;
+                }
+
+                const gpuStartTime = performance.now();
+                const statsStartTime = performance.now();
+                let gpuLoadFailed = false;
+                let gpuLoadError = '';
+
+                const appendGpuFailureToStatus = () => {
+                    if (silent || !gpuLoadFailed) {
+                        return;
+                    }
+                    const suffix = `, GPU info failed: ${gpuLoadError}`;
+                    if (this.statusText.includes('GPU info failed')) {
+                        return;
+                    }
+                    if (this.statusText.includes('GPU loading')) {
+                        this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Containers loaded${suffix})`;
+                    } else {
+                        this.statusText += suffix;
+                    }
+                };
+
+                fetch('/api/gpu/usage')
+                    .then(response => response.json())
+                    .then(gpuResult => {
+                        const gpuTime = performance.now() - gpuStartTime;
+                        if (gpuResult.code === 0) {
+                            this.gpuUsage = gpuResult.data || {};
+                            this.containers = this.updateContainersWithGpu();
+                            console.log(`[GPU] Loaded GPU usage for ${Object.keys(this.gpuUsage).length} containers (${gpuTime.toFixed(0)}ms)`);
+                        } else {
+                            gpuLoadFailed = true;
+                            gpuLoadError = gpuResult.message || 'unknown error';
+                            console.warn('GPU info failed:', gpuLoadError);
+                            appendGpuFailureToStatus();
+                        }
+                    })
+                    .catch(error => {
+                        gpuLoadFailed = true;
+                        gpuLoadError = error.message || String(error);
+                        console.error('Failed to fetch GPU usage:', error);
+                        appendGpuFailureToStatus();
+                    });
+
+                fetch('/api/containers/stats')
+                    .then(response => response.json())
+                    .then(statsResult => {
+                        const statsTime = performance.now() - statsStartTime;
+                        if (statsResult.code === 0) {
+                            this.containerStats = statsResult.data || {};
+                            this.containers = this.updateContainersWithStats();
+                            const totalTime = performance.now() - startTime;
+                            const gpuTime = performance.now() - gpuStartTime;
+                            let status = `Last updated: ${new Date().toLocaleTimeString()} (Total: ${totalTime.toFixed(0)}ms, GPU: ${gpuTime.toFixed(0)}ms, Stats: ${statsTime.toFixed(0)}ms)`;
+                            if (gpuLoadFailed) {
+                                status += `, GPU info failed: ${gpuLoadError}`;
+                            }
+                            this.statusText = status;
+                            console.log(`[Stats] Loaded stats for ${Object.keys(this.containerStats).length} containers (${statsTime.toFixed(0)}ms)`);
+                        } else if (!silent) {
+                            console.warn('Container stats failed:', statsResult.message);
+                            this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Stats info failed)`;
+                            appendGpuFailureToStatus();
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Failed to fetch container stats:', error);
+                        if (!silent) {
+                            this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (Stats info error)`;
+                            appendGpuFailureToStatus();
+                        }
+                    });
+            } catch (error) {
+                console.error('Failed to refresh containers:', error);
+                this.statusText = `Error: ${error.message}`;
+            } finally {
+                if (!silent) {
+                    this.isLoading = false;
+                }
+            }
+        },
+
+        /**
+         * Subsequent refreshes: single overview request (containers + GPU + stats).
+         * @param {boolean} silent
+         */
+        async refreshContainersOverview(silent = false) {
+            const startTime = performance.now();
+
+            if (!silent) {
+                this.isLoading = true;
+                this.statusText = 'Refreshing...';
+            }
+
+            try {
+                const response = await fetch('/api/containers/overview');
+                const result = await response.json();
+                const elapsed = performance.now() - startTime;
+
+                if (result.code === 0) {
+                    const overview = result.data || {};
+                    this.gpuUsage = overview.gpu_usage || {};
+                    this.containerStats = overview.stats || {};
+                    this.containers = this.processContainers(overview.containers || []);
+                    this.containers = this.updateContainersWithGpu();
+                    this.containers = this.updateContainersWithStats();
+
+                    console.log(
+                        `[Overview] ${this.containers.length} containers, `
+                        + `${Object.keys(this.gpuUsage).length} GPU, `
+                        + `${Object.keys(this.containerStats).length} stats (${elapsed.toFixed(0)}ms)`
+                    );
+
+                    this.statusText = `Last updated: ${new Date().toLocaleTimeString()} (${elapsed.toFixed(0)}ms)`;
+                } else {
+                    this.statusText = `Error: ${result.message}`;
                 }
             } catch (error) {
                 console.error('Failed to refresh containers:', error);

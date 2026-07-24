@@ -3,6 +3,7 @@ import sys
 import shutil
 import time
 import json
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, Response
@@ -25,12 +26,18 @@ router = APIRouter()
 _compose_cmd: list[str]|None = None
 # Restart password cache (username -> password_hash)
 _restart_passwords: dict[str, str] | None = None
-# GPU container IDs cache (for optimization)
-_gpu_container_ids_cache: list[str] | None = None
-_gpu_container_ids_cache_time: float = 0
-GPU_CONTAINER_IDS_CACHE_TTL = 2.0  # Cache TTL in seconds
 # HTTP request API configuration: whether to block local/private IP addresses (default False, allow local IP access)
 HTTP_REQUEST_BLOCK_LOCAL_IP = False
+
+
+def _log_api_json(endpoint: str, payload: Any, *, summary: str, debug: bool) -> None:
+    """Log API response: summary always at info; full JSON at info when debug=true."""
+    text = json.dumps(payload, ensure_ascii=False)
+    if debug:
+        logger.info(f'{endpoint} -> {summary}, response={text}')
+    else:
+        logger.info(f'{endpoint} -> {summary}')
+        logger.debug(f'{endpoint} response={text}')
 
 
 # def get_thread_executor() -> ThreadPoolExecutor:
@@ -210,89 +217,107 @@ async def handle_status(request: Request):
 @router.get("/api/containers", response_model=models.ResponseModel,
             summary='Get container information list',
             description='Get detailed information of all running containers')
-async def get_containers(request: Request):
+async def get_containers(
+    request: Request,
+    debug: bool = Query(False, description='Log full JSON response at info level'),
+):
     """Get container information list API"""
-    global _gpu_container_ids_cache, _gpu_container_ids_cache_time
+    client = f'{request.client.host}:{request.client.port}'
+    logger.info(f'client={client}, GET /api/containers debug={debug}')
 
-    logger.info('client={request.client.host}:{request.client.port}')
     containers = await dutil.a_get_container_list()
-    logger.info(f'containers={json.dumps(containers, ensure_ascii=False)}')
-
-    # Extract container IDs that use GPU (for optimization)
-    gpu_container_ids = []
-    for container in containers:
-        gpu_ids = container.get('GpuDevices', None)
-        if gpu_ids:
-            gpu_container_ids.append(container.get('Id', ''))
-
-    # Update cache
-    _gpu_container_ids_cache = gpu_container_ids
-    _gpu_container_ids_cache_time = time.perf_counter()
-    logger.debug(f'cached {len(gpu_container_ids)} GPU container IDs for optimization')
-
     ret = {
         'code': 0,
         'message': 'success',
         'data': containers
     }
-    logger.info(f'ret={json.dumps(ret, ensure_ascii=False)}')
+    _log_api_json('GET /api/containers', ret, summary=f'{len(containers)} containers', debug=debug)
     return ret
 
 
 @router.get("/api/gpu/usage", response_model=models.ResponseModel,
             summary='Get GPU usage information (associated with containers)',
             description='Get GPU usage information and associate with container IDs')
-async def get_gpu_usage():
+async def get_gpu_usage(
+    request: Request,
+    debug: bool = Query(False, description='Log full JSON response at info level'),
+):
     """Get GPU usage information and associate with container IDs"""
-    global _gpu_container_ids_cache, _gpu_container_ids_cache_time
+    client = f'{request.client.host}:{request.client.port}'
+    logger.info(f'client={client}, GET /api/gpu/usage debug={debug}')
 
-    logger.info('client={request.client.host}:{request.client.port}')
-
-    # Check if cache is valid (within 2 seconds)
-    use_gpu_container_ids = None
-    current_time = time.perf_counter()
-    if (_gpu_container_ids_cache is not None and
-        _gpu_container_ids_cache and
-        (current_time - _gpu_container_ids_cache_time) <= GPU_CONTAINER_IDS_CACHE_TTL):
-        use_gpu_container_ids = _gpu_container_ids_cache
-        logger.debug(f'using cached GPU container IDs ({len(use_gpu_container_ids)} containers) for optimization')
-    else:
-        logger.debug('GPU container IDs cache expired or not available, querying all containers')
-
-    gpu_usage = await dutil.a_get_gpu_usage_by_containers(use_gpu_container_ids=use_gpu_container_ids)
+    gpu_usage = await dutil.a_get_gpu_usage_by_containers()
     ret = {
         'code': 0,
         'message': 'success',
         'data': gpu_usage
     }
-    logger.info(f'ret={json.dumps(ret, ensure_ascii=False)}')
+    _log_api_json(
+        'GET /api/gpu/usage',
+        ret,
+        summary=f'{len(gpu_usage)} containers with GPU memory',
+        debug=debug,
+    )
     return ret
 
 
 @router.get("/api/containers/stats", response_model=models.ResponseModel,
             summary='Get container stats (CPU, memory usage)',
             description='Get real-time container stats including CPU and memory usage')
-async def get_container_stats():
+async def get_container_stats(
+    request: Request,
+    debug: bool = Query(False, description='Log full JSON response at info level'),
+):
     """Get container stats including CPU and memory usage"""
-    logger.info('client={request.client.host}:{request.client.port}')
+    client = f'{request.client.host}:{request.client.port}'
+    logger.info(f'client={client}, GET /api/containers/stats debug={debug}')
 
-    # Get all running container IDs (we can optimize later if needed)
     container_ids = await dutil.a_get_running_container_ids()
     if not container_ids:
-        return {
+        ret = {
             'code': 0,
             'message': 'success',
             'data': {}
         }
+        _log_api_json('GET /api/containers/stats', ret, summary='0 containers', debug=debug)
+        return ret
 
-    # Get container stats
     stats = await dutil.a_get_container_stats(container_ids)
     ret = {
         'code': 0,
         'message': 'success',
         'data': stats
     }
-    logger.info(f'ret={json.dumps(ret, ensure_ascii=False)}')
+    _log_api_json('GET /api/containers/stats', ret, summary=f'{len(stats)} containers', debug=debug)
+    return ret
+
+
+@router.get("/api/containers/overview", response_model=models.ResponseModel,
+            summary='Get containers overview (list + GPU + stats)',
+            description='Aggregate containers, GPU/NPU usage, and resource stats in one request')
+async def get_containers_overview(
+    request: Request,
+    debug: bool = Query(False, description='Log full JSON response at info level'),
+):
+    """Get containers list, GPU usage, and stats in a single request."""
+    client = f'{request.client.host}:{request.client.port}'
+    logger.info(f'client={client}, GET /api/containers/overview debug={debug}')
+
+    overview = await dutil.a_get_containers_overview()
+    containers = overview['containers']
+    gpu_usage = overview['gpu_usage']
+    stats = overview['stats']
+    ret = {
+        'code': 0,
+        'message': 'success',
+        'data': overview,
+    }
+    summary = (
+        f'{len(containers)} containers, '
+        f'{len(gpu_usage)} with GPU memory, '
+        f'{len(stats)} with stats'
+    )
+    _log_api_json('GET /api/containers/overview', ret, summary=summary, debug=debug)
     return ret
 
 

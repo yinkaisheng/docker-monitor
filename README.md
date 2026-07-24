@@ -9,6 +9,7 @@ A Docker container monitoring tool with a web UI. The backend is built with **Fa
 ### Backend (API)
 
 - **Container list** (`GET /api/containers`) — ID, name, image, ports, GPU/NPU devices, compose file, entrypoint, etc. via `docker inspect`
+- **Containers overview** (`GET /api/containers/overview`) — aggregated list + GPU/NPU usage + stats (used after initial page load)
 - **GPU/NPU usage** (`GET /api/gpu/usage`) — NVIDIA (`nvidia-smi`) or Huawei Ascend (`npu-smi info`); maps memory to containers
 - **Container stats** (`GET /api/containers/stats`) — CPU, memory, network and disk I/O via `docker stats --no-stream`
 - **Healthcheck** (`GET /api/containers/{id}/healthcheck`) — probe container health URL from backend
